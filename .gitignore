@@ -4,3 +4,5 @@
 # Temporäre Dateien
 /tmp/
 
+cluster/ansible/.k3s-bootstrap-token
+cluster/ansible/k3s.yaml
