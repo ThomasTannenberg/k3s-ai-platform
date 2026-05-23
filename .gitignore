@@ -1,5 +1,5 @@
 # Lokale Secrets
-.local-secrets/
+/.local-secrets/
 
 # Temporäre Dateien
 /tmp/
