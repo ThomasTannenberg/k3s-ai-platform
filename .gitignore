@@ -7,3 +7,4 @@
 cluster/ansible/.k3s-bootstrap-token
 cluster/ansible/k3s.yaml
 .k3s-bootstrap-token
+.k3s.yaml
