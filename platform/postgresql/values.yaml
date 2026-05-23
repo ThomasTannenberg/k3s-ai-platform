@@ -15,6 +15,11 @@ postgresql:
       adminPasswordKey: postgres-password
 
   primary:
+    nodeSelector:
+      workload-type: tools
+
+    tolerations: []
+
     persistence:
       enabled: true
       storageClass: longhorn

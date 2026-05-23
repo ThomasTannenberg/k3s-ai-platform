@@ -1,4 +1,9 @@
 keycloak:
+  nodeSelector:
+    workload-type: tools
+
+  tolerations: []
+  
   image:
     registry: docker.io
     repository: bitnamilegacy/keycloak

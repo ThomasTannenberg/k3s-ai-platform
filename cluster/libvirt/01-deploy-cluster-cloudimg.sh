@@ -32,7 +32,6 @@ LAN_DNS="${LAN_DNS:-192.168.178.1,1.1.1.1}"
 VMS=(
   "k3s-lb-1|192.168.178.50|52:54:00:00:00:10|2048|1|20"
   "k3s-server-1|192.168.178.51|52:54:00:00:00:11|4096|4|60"
-  "k3s-agent-gpu-1|192.168.178.61|52:54:00:00:00:21|32768|8|200"
   "k3s-agent-tools-1|192.168.178.62|52:54:00:00:00:22|4096|4|100"
 )
 
@@ -399,7 +398,6 @@ main() {
   echo "  Fertig in ${elapsed}s. Login z. B.:"
   echo "      ssh k3sadmin@k3s-lb-1"
   echo "      ssh k3sadmin@k3s-server-1"
-  echo "      ssh k3sadmin@k3s-agent-gpu-1"
   echo "      ssh k3sadmin@k3s-agent-tools-1"
   echo "============================================================"
 }

@@ -1,12 +1,12 @@
 longhorn:
   persistence:
     defaultClass: true
-    defaultClassReplicaCount: 2
+    defaultClassReplicaCount: 1
     reclaimPolicy: Retain
     defaultFsType: ext4
 
   defaultSettings:
-    defaultReplicaCount: 2
+    defaultReplicaCount: 1
     replicaAutoBalance: best-effort
     storageOverProvisioningPercentage: 100
     storageMinimalAvailablePercentage: 15

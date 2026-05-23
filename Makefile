@@ -2,7 +2,7 @@
 
 KUBECONFIG_FILE := cluster/ansible/k3s.yaml
 
-VMS := k3s-lb-1 k3s-server-1 k3s-agent-gpu-1 k3s-agent-tools-1
+VMS := k3s-lb-1 k3s-server-1 k3s-agent-tools-1
 
 help:
 	@echo "Verfügbare Ziele:"
