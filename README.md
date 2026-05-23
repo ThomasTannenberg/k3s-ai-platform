@@ -1,39 +1,375 @@
-
 # k3s AI Platform
 
-Lokale Kubernetes Plattform auf Basis von KVM, libvirt, Ubuntu Cloud Images und K3s.
+Lokale Kubernetes Plattform für AI Workloads auf Basis von KVM, libvirt, Ubuntu Cloud Images und K3s.
 
-Das Projekt stellt eine lokale VM Umgebung bereit, auf der ein kleines K3s Cluster für spätere AI und GPU Workloads aufgebaut wird. Die Umgebung besteht aus einem LoadBalancer, einem K3s Server Node, einem GPU Worker Node und einem Tools Worker Node.
+Das Projekt baut ein lokales Kubernetes Cluster als virtuelle Maschinen auf einem Ubuntu Host auf. Die Plattform ist so vorbereitet, dass Dienste später über eine eigene Domain öffentlich erreichbar sind. Der externe Zugriff läuft über eine feste öffentliche IPv4 Adresse, eine FRITZ!Box, HAProxy, Traefik und cert-manager.
+
+Öffentliche Werte wie die feste IPv4 Adresse und die Domain werden in dieser Dokumentation bewusst als Platzhalter beschrieben.
 
 ## Ziel
 
-Ziel des Projekts ist eine lokale Kubernetes Plattform für AI Workloads.
+Ziel ist eine lokal betreibbare Kubernetes Plattform für AI und spätere GPU Workloads.
 
-Die Plattform soll später folgende Aufgaben unterstützen:
+Die Plattform deckt aktuell folgende Punkte ab:
 
-- Lokales Kubernetes Cluster mit K3s
-- Getrennte Worker Nodes für AI und Tools
-- Vorbereitung für NVIDIA GPU Workloads
-- LoadBalancer für Kubernetes API und spätere Ingress Weiterleitung
-- Automatisierter Aufbau über Bash, libvirt und Ansible
-- Reproduzierbare lokale Testumgebung
+- lokale VM Umgebung mit KVM und libvirt
+- K3s Cluster mit getrennten Rollen
+- LoadBalancer VM als zentraler Einstiegspunkt
+- HAProxy als vorgelagerter TCP LoadBalancer
+- Traefik als Kubernetes Ingress Controller
+- cert-manager für Let’s Encrypt Zertifikate
+- öffentliche Erreichbarkeit über eigene Domain
+- Vorbereitung für spätere NVIDIA GPU Workloads
+- reproduzierbarer Aufbau über Bash, Ansible und Helm Wrapper Charts
 
 ## Architektur
 
-Die Umgebung besteht aktuell aus vier virtuellen Maschinen.
+Das Cluster besteht aus vier virtuellen Maschinen.
 
 | VM | IP | Rolle | RAM | vCPU | Disk |
 |---|---:|---|---:|---:|---:|
-| k3s-lb-1 | 192.168.122.10 | HAProxy LoadBalancer | 2048 MB | 1 | 20 GB |
-| k3s-server-1 | 192.168.122.11 | K3s Server, Control Plane, etcd | 4096 MB | 4 | 60 GB |
-| k3s-agent-gpu-1 | 192.168.122.21 | Worker Node für AI und GPU Workloads | 32768 MB | 8 | 200 GB |
-| k3s-agent-tools-1 | 192.168.122.22 | Worker Node für Tools und Plattformdienste | 4096 MB | 4 | 100 GB |
+| k3s-lb-1 | 192.168.178.50 | HAProxy LoadBalancer | 2048 MB | 1 | 20 GB |
+| k3s-server-1 | 192.168.178.51 | K3s Server, Control Plane, etcd | 4096 MB | 4 | 60 GB |
+| k3s-agent-gpu-1 | 192.168.178.61 | Worker Node für AI und spätere GPU Workloads | 32768 MB | 8 | 200 GB |
+| k3s-agent-tools-1 | 192.168.178.62 | Worker Node für Tools und Plattformdienste | 4096 MB | 4 | 100 GB |
+
+## Netzwerk Zielbild
+
+Der öffentliche Zugriff läuft über diesen Pfad:
+
+```text
+Internet
+  -> feste öffentliche IPv4
+  -> FRITZ!Box
+  -> Portfreigabe TCP 80 und TCP 443
+  -> k3s-lb-1
+  -> HAProxy
+  -> Traefik
+  -> Kubernetes Service
+  -> Pod
+```
+
+Beispiel mit Platzhaltern:
+
+```text
+https://whoami.<DOMAIN>
+```
+
+## Öffentliche Werte
+
+
+Beispielhafte Verwendung:
+
+```text
+A   @     <PUBLIC_IPV4>
+A   *     <PUBLIC_IPV4>
+A   www   <PUBLIC_IPV4>
+```
+
+Für lokale Tests und private Konfigurationen können diese Werte in einer nicht getrackten Datei gepflegt werden, zum Beispiel:
+
+```text
+.local-secrets/network.env
+```
+
+Diese Datei darf nicht nach GitHub.
+
+## DNS
+
+Die Domain wird beim DNS Anbieter verwaltet.
+
+Benötigte DNS Records:
+
+```text
+A   @     <PUBLIC_IPV4>
+A   *     <PUBLIC_IPV4>
+A   www   <PUBLIC_IPV4>
+```
+
+Damit zeigen die Hauptdomain, `www` und alle Subdomains auf die feste öffentliche IPv4 Adresse.
+
+Beispiele:
+
+```text
+<DOMAIN>
+www.<DOMAIN>
+whoami.<DOMAIN>
+ai.<DOMAIN>
+keycloak.<DOMAIN>
+```
+
+Für den aktuellen Aufbau wird IPv4 verwendet.
+
+AAAA Records sollten nur gesetzt werden, wenn auch IPv6 sauber auf den eigenen Anschluss und den eigenen Einstiegspunkt zeigt. Andernfalls können Clients über IPv6 an einem falschen Ziel landen.
+
+DNS prüfen:
+
+```bash
+dig @8.8.8.8 <DOMAIN> A
+dig @8.8.8.8 whoami.<DOMAIN> A
+dig @8.8.8.8 <DOMAIN> AAAA
+```
+
+Erwartung:
+
+```text
+A Record zeigt auf <PUBLIC_IPV4>
+AAAA ist leer oder bewusst korrekt gesetzt
+```
+
+## FRITZ!Box
+
+Die FRITZ!Box leitet eingehende Anfragen aus dem Internet an die LoadBalancer VM weiter.
+
+Pfad in der FRITZ!Box:
+
+```text
+Internet
+  -> Freigaben
+  -> Portfreigaben
+```
+
+Die Portfreigaben zeigen auf:
+
+```text
+k3s-lb-1
+192.168.178.50
+```
+
+Benötigte Freigaben:
+
+```text
+TCP 80  -> 192.168.178.50:80
+TCP 443 -> 192.168.178.50:443
+```
+
+Nicht öffentlich freigeben:
+
+```text
+TCP 6443
+TCP 22
+```
+
+Port `6443` ist die Kubernetes API und sollte nicht aus dem Internet erreichbar sein.
+
+## Ubuntu Host
+
+Der Ubuntu Host ist der physische Rechner für die Virtualisierung.
+
+Er stellt bereit:
+
+```text
+KVM
+libvirt
+virt-install
+cloud-init
+Ansible
+kubectl
+helm
+```
+
+Die VMs werden mit Ubuntu Cloud Images und cloud-init erstellt.
+
+Wichtige Ordner:
+
+```text
+cluster/libvirt
+cluster/ansible
+platform/traefik
+platform/cert-manager
+apps/demo
+docs
+```
+
+## libvirt Bridge
+
+Die VMs laufen im FRITZ!Box LAN über eine Linux Bridge.
+
+Die aktive Bridge heißt:
+
+```text
+br0
+```
+
+Prüfen:
+
+```bash
+ip -br addr show br0
+bridge link
+```
+
+Erwartung:
+
+```text
+br0 UP 192.168.178.x/24
+enp11s0 master br0
+```
+
+## Wann muss 02-create-host-bridge.sh ausgeführt werden?
+
+Das Skript `cluster/libvirt/02-create-host-bridge.sh` wird nur benötigt, wenn der Ubuntu Host noch keine Bridge `br0` hat.
+
+Bei einem bereits eingerichteten Host mit aktiver Bridge muss es nicht erneut ausgeführt werden.
+
+Ausführen nur in diesen Fällen:
+
+```text
+neuer Ubuntu Host
+Host wurde neu installiert
+br0 wurde gelöscht
+Netzwerk soll bewusst neu auf Bridge umgebaut werden
+ip -br addr show br0 liefert keine Bridge
+```
+
+Nicht bei jedem Redeploy ausführen.
+
+Der normale Redeploy Ablauf beginnt mit:
+
+```bash
+make vm-create
+```
+
+Nicht mit:
+
+```bash
+make host-bridge
+```
+
+Das `host-bridge` Target verändert die Netzwerkkonfiguration des Hosts und sollte bewusst manuell ausgeführt werden.
+
+## Unterschied zum alten Testaufbau
+
+Vor dem Bridge Umbau wurde temporär `socat` verwendet.
+
+Alter Testpfad:
+
+```text
+Internet
+  -> FRITZ!Box
+  -> Ubuntu Host
+  -> socat
+  -> k3s-lb-1 im libvirt NAT Netz
+  -> HAProxy
+  -> Traefik
+```
+
+Dieser Aufbau war nur ein Funktionstest.
+
+Der Zielaufbau ist jetzt:
+
+```text
+Internet
+  -> FRITZ!Box
+  -> k3s-lb-1 192.168.178.50
+  -> HAProxy
+  -> Traefik
+```
+
+`socat` wird nach dem Bridge Umbau nicht mehr benötigt.
+
+Alte socat Prozesse können gestoppt werden:
+
+```bash
+sudo pkill -f "socat TCP-LISTEN:80" || true
+sudo pkill -f "socat TCP-LISTEN:443" || true
+sudo ss -tulpn | grep -E ':80|:443' || true
+```
+
+## HAProxy
+
+HAProxy läuft auf:
+
+```text
+k3s-lb-1
+192.168.178.50
+```
+
+HAProxy leitet den Traffic weiter.
+
+Kubernetes API intern:
+
+```text
+192.168.178.50:6443
+  -> k3s-server-1:6443
+```
+
+HTTP:
+
+```text
+192.168.178.50:80
+  -> k3s-agent-gpu-1:30080
+  -> k3s-agent-tools-1:30080
+```
+
+HTTPS:
+
+```text
+192.168.178.50:443
+  -> k3s-agent-gpu-1:30443
+  -> k3s-agent-tools-1:30443
+```
+
+Die HAProxy Konfiguration wird über Ansible erzeugt.
+
+Template:
+
+```text
+cluster/ansible/templates/haproxy.cfg.j2
+```
+
+HAProxy prüfen:
+
+```bash
+ssh k3s-lb-1
+
+sudo systemctl status haproxy --no-pager
+sudo haproxy -c -f /etc/haproxy/haproxy.cfg
+sudo ss -tulpn | grep -E ':80|:443|:6443'
+```
+
+## K3s
+
+Das K3s Cluster wird über Ansible installiert.
+
+Inventory:
+
+```text
+cluster/ansible/inventory.ini
+```
+
+Globale Variablen:
+
+```text
+cluster/ansible/group_vars/all.yml
+```
+
+Die Kubeconfig wird erzeugt unter:
+
+```text
+cluster/ansible/k3s.yaml
+```
+
+Diese Datei darf nicht nach GitHub.
+
+Kubeconfig setzen:
+
+```bash
+export KUBECONFIG=$PWD/cluster/ansible/k3s.yaml
+```
+
+Oder dauerhaft nach `~/.kube/config` kopieren:
+
+```bash
+mkdir -p ~/.kube
+cp cluster/ansible/k3s.yaml ~/.kube/config
+chmod 600 ~/.kube/config
+```
 
 ## Node Labels
 
-Nach der Installation werden die Worker Nodes automatisch gelabelt.
+Die Worker Nodes werden automatisch gelabelt.
 
-Der GPU Node erhält:
+GPU Node:
 
 ```text
 node-role.kubernetes.io/worker=true
@@ -41,26 +377,23 @@ workload-type=ai
 accelerator=nvidia
 ```
 
-Der Tools Node erhält:
+Tools Node:
 
 ```text
 node-role.kubernetes.io/worker=true
 workload-type=tools
 ```
 
-Die Labels können geprüft werden mit:
-
-```bash
-kubectl get nodes --show-labels
-```
-
-Oder übersichtlicher:
+Prüfen:
 
 ```bash
 kubectl get nodes -L workload-type -L accelerator
+kubectl get nodes --show-labels
 ```
 
-Beispiel für spätere AI Workloads:
+Workloads können später gezielt geplant werden.
+
+AI Workloads:
 
 ```yaml
 nodeSelector:
@@ -68,70 +401,413 @@ nodeSelector:
   accelerator: nvidia
 ```
 
-Beispiel für Tools Workloads:
+Tools Workloads:
 
 ```yaml
 nodeSelector:
   workload-type: tools
 ```
 
-## Wichtiger Hinweis zur GPU
+## Hinweis zur GPU
 
-Der Node `k3s-agent-gpu-1` ist aktuell als GPU Node vorbereitet und entsprechend gelabelt.
+Der Node `k3s-agent-gpu-1` ist als GPU Node vorbereitet und gelabelt.
 
-Das Label `accelerator=nvidia` bedeutet nur, dass der Node logisch als NVIDIA GPU Node markiert ist. Damit Kubernetes echte GPU Ressourcen verwenden kann, sind weitere Schritte nötig.
+Das Label `accelerator=nvidia` bedeutet nur, dass der Node logisch als GPU Node markiert ist.
 
-Dazu gehören später:
-
-- GPU Passthrough der NVIDIA GPU in die VM
-- NVIDIA Treiber innerhalb der GPU VM
-- NVIDIA Container Toolkit
-- NVIDIA Device Plugin oder NVIDIA GPU Operator im Cluster
-
-Solange diese Schritte nicht umgesetzt sind, zeigt Kubernetes keine echte Ressource wie `nvidia.com/gpu` an.
-
-## Projektstruktur
+Für echte GPU Nutzung sind noch weitere Schritte nötig:
 
 ```text
-.
-├── Makefile
-├── cluster
-│   ├── ansible
-│   │   ├── ansible.cfg
-│   │   ├── group_vars
-│   │   │   └── all.yml
-│   │   ├── inventory.ini
-│   │   ├── site.yml
-│   │   ├── templates
-│   │   │   └── haproxy.cfg.j2
-│   │   └── uninstall.yml
-│   └── libvirt
-│       ├── 00-bootstrap.sh
-│       ├── 01-deploy-cluster-cloudimg.sh
-│       └── 99-cleanup.sh
-└── tmp
-    └── cloud-init
+GPU Passthrough in die VM
+NVIDIA Treiber in der VM
+NVIDIA Container Toolkit
+NVIDIA Device Plugin oder NVIDIA GPU Operator
 ```
 
-## Voraussetzungen
+Erst danach stellt Kubernetes Ressourcen wie `nvidia.com/gpu` bereit.
 
-Das Projekt ist für ein lokales Ubuntu Hostsystem gedacht.
+## Traefik
 
-Benötigt werden:
+Traefik wird über einen Wrapper Chart installiert.
 
-- Ubuntu Hostsystem
-- CPU Virtualisierung aktiviert
-- KVM und libvirt
-- SSH Key für den Zugriff auf die VMs
-- Ansible
-- kubectl
-- helm
+Chart:
 
-Die VM Erstellung nutzt Ubuntu Cloud Images und cloud init. Es wird kein klassischer Ubuntu Installer gestartet.
+```text
+platform/traefik
+```
 
-## Git Ignore
+Traefik läuft auf dem Tools Node:
 
-Lokale Secrets und temporäre Dateien sollen nicht ins Repository.
+```text
+k3s-agent-tools-1
+```
+
+Der Traefik Service ist ein NodePort Service.
+
+Ports:
+
+```text
+HTTP   30080
+HTTPS  30443
+```
+
+Installation:
+
+```bash
+helm dependency update platform/traefik
+
+helm upgrade --install traefik platform/traefik \
+  --namespace traefik \
+  --create-namespace
+```
+
+Prüfen:
+
+```bash
+kubectl get pods -n traefik -o wide
+kubectl get svc -n traefik
+kubectl get ingressclass
+```
+
+Erwartung:
+
+```text
+Traefik Pod läuft auf k3s-agent-tools-1
+Service Type ist NodePort
+Ports sind 80:30080 und 443:30443
+```
+
+## cert-manager
+
+cert-manager wird für TLS Zertifikate verwendet.
+
+Chart:
+
+```text
+platform/cert-manager
+```
+
+Installation:
+
+```bash
+helm dependency update platform/cert-manager
+
+helm upgrade --install cert-manager platform/cert-manager \
+  --namespace cert-manager \
+  --create-namespace
+```
+
+Prüfen:
+
+```bash
+kubectl get pods -n cert-manager -o wide
+kubectl get crd | grep cert-manager
+```
+
+Warten bis alle Pods bereit sind:
+
+```bash
+kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=300s
+```
+
+## Let’s Encrypt Issuer
+
+Es werden zwei ClusterIssuer verwendet.
+
+```text
+letsencrypt-staging
+letsencrypt-prod
+```
+
+Dateien:
+
+```text
+platform/cert-manager/issuers/letsencrypt-staging.yaml
+platform/cert-manager/issuers/letsencrypt-prod.yaml
+```
+
+Installieren:
+
+```bash
+kubectl apply -f platform/cert-manager/issuers/letsencrypt-staging.yaml
+kubectl apply -f platform/cert-manager/issuers/letsencrypt-prod.yaml
+```
+
+Prüfen:
+
+```bash
+kubectl get clusterissuer
+```
+
+Erwartung:
+
+```text
+letsencrypt-staging   True
+letsencrypt-prod      True
+```
+
+Für die Zertifikatsvalidierung wird HTTP01 verwendet. Deshalb muss Port 80 öffentlich erreichbar sein.
+
+## Demo Anwendung
+
+Zum Testen gibt es eine whoami Demo.
+
+Datei:
+
+```text
+apps/demo/whoami.yaml
+```
+
+Der Hostname sollte in der Datei auf die eigene Domain angepasst werden.
+
+Beispiel:
+
+```text
+whoami.<DOMAIN>
+```
+
+Installieren:
+
+```bash
+kubectl apply -f apps/demo/whoami.yaml
+```
+
+Prüfen:
+
+```bash
+kubectl get pods -n demo -o wide
+kubectl get svc -n demo
+kubectl get ingress -n demo
+kubectl get certificate -n demo
+```
+
+Warten bis das Zertifikat bereit ist:
+
+```bash
+kubectl wait --for=condition=Ready certificate/whoami-tls -n demo --timeout=300s
+```
+
+Testen:
+
+```bash
+curl -v http://whoami.<DOMAIN>
+curl -v https://whoami.<DOMAIN>
+```
+
+Erfolgreicher HTTPS Test:
+
+```text
+SSL certificate verified
+issuer: C=US; O=Let's Encrypt
+HTTP/2 200
+X-Forwarded-Proto: https
+```
+
+## Installation von Grund auf
+
+Aus dem Repository Root:
+
+```bash
+cd ~/Development/k3s-ai-platform
+```
+
+Falls `br0` bereits existiert, nicht erneut `host-bridge` ausführen.
+
+VMs erstellen:
+
+```bash
+make vm-create
+```
+
+SSH prüfen:
+
+```bash
+make vm-test
+```
+
+Cluster installieren:
+
+```bash
+make cluster-create
+```
+
+Kubeconfig setzen:
+
+```bash
+export KUBECONFIG=$PWD/cluster/ansible/k3s.yaml
+```
+
+Traefik installieren:
+
+```bash
+make traefik-install
+```
+
+cert-manager installieren:
+
+```bash
+make cert-manager-install
+```
+
+Issuer installieren:
+
+```bash
+kubectl apply -f platform/cert-manager/issuers/letsencrypt-staging.yaml
+kubectl apply -f platform/cert-manager/issuers/letsencrypt-prod.yaml
+```
+
+Demo installieren:
+
+```bash
+kubectl apply -f apps/demo/whoami.yaml
+```
+
+Validieren:
+
+```bash
+make validate
+curl -v https://whoami.<DOMAIN>
+```
+
+## Redeploy Ablauf
+
+Wenn das Cluster komplett neu aufgebaut werden soll:
+
+```bash
+make vm-delete
+make vm-create
+make vm-test
+make cluster-create
+```
+
+Danach:
+
+```bash
+export KUBECONFIG=$PWD/cluster/ansible/k3s.yaml
+
+make traefik-install
+make cert-manager-install
+
+kubectl apply -f platform/cert-manager/issuers/letsencrypt-staging.yaml
+kubectl apply -f platform/cert-manager/issuers/letsencrypt-prod.yaml
+kubectl apply -f apps/demo/whoami.yaml
+```
+
+FRITZ!Box Portfreigaben bleiben bestehen, solange `k3s-lb-1` wieder die IP `192.168.178.50` bekommt.
+
+## Makefile Ziele
+
+Wichtige Ziele:
+
+```text
+make host-bridge
+make vm-create
+make vm-delete
+make vm-list
+make vm-start
+make vm-shutdown
+make vm-test
+make cluster-create
+make cluster-delete
+make traefik-install
+make traefik-status
+make cert-manager-install
+make cert-manager-status
+make validate
+make cleanup
+```
+
+Hinweis:
+
+```text
+make host-bridge nur verwenden, wenn br0 fehlt.
+```
+
+## Validierung
+
+Cluster:
+
+```bash
+kubectl get nodes -o wide
+kubectl get nodes -L workload-type -L accelerator
+kubectl get pods -A
+```
+
+Traefik:
+
+```bash
+kubectl get pods -n traefik -o wide
+kubectl get svc -n traefik
+kubectl logs -n traefik deploy/traefik
+```
+
+cert-manager:
+
+```bash
+kubectl get pods -n cert-manager -o wide
+kubectl get clusterissuer
+kubectl get certificate -A
+kubectl get order -A
+kubectl get challenge -A
+```
+
+DNS:
+
+```bash
+dig @8.8.8.8 <DOMAIN> A
+dig @8.8.8.8 whoami.<DOMAIN> A
+dig @8.8.8.8 <DOMAIN> AAAA
+```
+
+HAProxy:
+
+```bash
+ssh k3s-lb-1
+
+sudo systemctl status haproxy --no-pager
+sudo haproxy -c -f /etc/haproxy/haproxy.cfg
+sudo ss -tulpn | grep -E ':80|:443|:6443'
+```
+
+Extern:
+
+```bash
+curl -v http://whoami.<DOMAIN>
+curl -v https://whoami.<DOMAIN>
+```
+
+## Sicherheit
+
+Öffentlich notwendig:
+
+```text
+TCP 80
+TCP 443
+```
+
+Nicht öffentlich freigeben:
+
+```text
+TCP 22
+TCP 6443
+libvirt Ports
+Ubuntu Host Management Ports
+```
+
+Port 80 wird für Let’s Encrypt HTTP01 benötigt.
+
+Port 443 wird für HTTPS Dienste benötigt.
+
+## Dateien, die nicht nach GitHub dürfen
+
+Nicht committen:
+
+```text
+cluster/ansible/k3s.yaml
+cluster/ansible/.k3s-bootstrap-token
+tmp/
+.local-secrets
+platform/*/charts/*.tgz
+```
 
 Empfohlene `.gitignore` Einträge:
 
@@ -146,281 +822,147 @@ tmp/
 # Lokale Cluster Dateien
 cluster/ansible/k3s.yaml
 cluster/ansible/.k3s-bootstrap-token
+
+# Helm Dependency Archive
+platform/*/charts/*.tgz
+
+# Logs
+*.log
+
+# Editor und OS
+.DS_Store
+.idea/
+.vscode/
 ```
 
-## Installation
-
-### 1. Host vorbereiten und VMs erstellen
+Vor dem Commit prüfen:
 
 ```bash
-make vm-create
+git status
+git ls-files | grep -E 'k3s.yaml|bootstrap-token|tmp/|local-secrets|seed.iso|user-data|meta-data|\.tgz$'
+git grep "<PUBLIC_IPV4>"
+git grep "109."
 ```
 
-Das Ziel führt zuerst das Bootstrap Skript aus und erstellt anschließend die VMs.
-
-Das Bootstrap Skript installiert die benötigten Pakete für KVM und libvirt, aktiviert libvirtd, startet das default Netzwerk und erzeugt bei Bedarf einen SSH Key.
-
-Nach dem ersten Bootstrap kann ein Logout oder Reboot notwendig sein, damit die Gruppenmitgliedschaften für `libvirt` und `kvm` aktiv werden.
-
-Falls die VM Erstellung danach wegen fehlender Gruppenrechte fehlschlägt, einmal neu anmelden oder rebooten und danach erneut ausführen:
+Wenn kritische Dateien auftauchen, aus dem Git Index entfernen:
 
 ```bash
-make vm-create
+git rm --cached cluster/ansible/k3s.yaml 2>/dev/null || true
+git rm --cached cluster/ansible/.k3s-bootstrap-token 2>/dev/null || true
+git rm -r --cached tmp 2>/dev/null || true
+git rm -r --cached .local-secrets 2>/dev/null || true
+git rm -r --cached platform/traefik/charts 2>/dev/null || true
+git rm -r --cached platform/cert-manager/charts 2>/dev/null || true
 ```
 
-### 2. SSH Zugriff prüfen
+## Troubleshooting
 
-```bash
-make vm-test
-```
-
-Alternativ direkt:
-
-```bash
-ssh k3sadmin@k3s-lb-1
-ssh k3sadmin@k3s-server-1
-ssh k3sadmin@k3s-agent-gpu-1
-ssh k3sadmin@k3s-agent-tools-1
-```
-
-### 3. K3s Cluster erstellen
-
-```bash
-make cluster-create
-```
-
-Das Ansible Playbook führt folgende Schritte aus:
-
-- HAProxy auf `k3s-lb-1` installieren
-- HAProxy für die Kubernetes API konfigurieren
-- `k3s-server-1` als ersten K3s Server Node initialisieren
-- K3s Agent Nodes joinen
-- Worker Labels setzen
-- GPU und Tools Labels setzen
-- lokale Kubeconfig erzeugen
-
-Die Kubeconfig wird hier abgelegt:
-
-```text
-cluster/ansible/k3s.yaml
-```
-
-### 4. Kubeconfig verwenden
-
-```bash
-export KUBECONFIG=cluster/ansible/k3s.yaml
-```
+### Domain zeigt noch auf alten Anbieter
 
 Prüfen:
 
 ```bash
-kubectl get nodes -o wide
-kubectl get nodes -L workload-type -L accelerator
-kubectl get pods -A
+dig <DOMAIN>
+dig @8.8.8.8 <DOMAIN>
 ```
 
-## Validierung
-
-Die Umgebung kann mit folgendem Ziel geprüft werden:
+Lokalen DNS Cache leeren:
 
 ```bash
-make validate
+sudo resolvectl flush-caches
 ```
 
-Dabei werden unter anderem geprüft:
+### FRITZ!Box zeigt k3s-lb-1 nicht an
 
-- Nodes
-- Node Labels
-- Pods
-- Helm Releases
-- StorageClasses
-- PVCs
-- PVs
-- Services
-- Ingress Ressourcen
-
-## Nützliche Befehle
-
-VMs anzeigen:
+Prüfen:
 
 ```bash
-make vm-list
+ping -c 3 192.168.178.50
+ssh k3s-lb-1 hostname
 ```
 
-VMs starten:
+Danach FRITZ!Box Seite neu laden.
+
+### SSH nutzt alte IPs
+
+Prüfen:
 
 ```bash
-make vm-start
+grep -n -A4 -B1 "Host k3s" ~/.ssh/config
+grep -n "192.168.122" ~/.ssh/config
 ```
 
-VMs herunterfahren:
-
-```bash
-make vm-shutdown
-```
-
-Cluster per Ansible entfernen:
-
-```bash
-make cluster-delete
-```
-
-VMs löschen:
-
-```bash
-make vm-delete
-```
-
-Alles bereinigen:
-
-```bash
-make cleanup
-```
-
-## Makefile Ziele
-
-| Ziel | Beschreibung |
-|---|---|
-| make vm-create | Host vorbereiten und VMs erstellen |
-| make vm-delete | VMs und lokale VM Dateien löschen |
-| make vm-list | libvirt VMs anzeigen |
-| make vm-start | VMs starten |
-| make vm-shutdown | VMs herunterfahren |
-| make vm-test | SSH Verbindung zu den VMs prüfen |
-| make cluster-create | K3s Cluster per Ansible erstellen |
-| make cluster-delete | K3s Cluster per Ansible entfernen |
-| make install | VMs erstellen und Cluster erstellen |
-| make validate | Cluster Status prüfen |
-| make cleanup | Cluster und VMs löschen |
-
-## HAProxy
-
-HAProxy läuft auf:
+Alte Einträge entfernen und neue Bridge IPs setzen:
 
 ```text
-k3s-lb-1
-192.168.122.10
+k3s-lb-1             192.168.178.50
+k3s-server-1         192.168.178.51
+k3s-agent-gpu-1      192.168.178.61
+k3s-agent-tools-1    192.168.178.62
 ```
 
-Aktuell wird darüber die Kubernetes API bereitgestellt:
+### Traefik antwortet mit 404
+
+Das ist normal, wenn keine passende Ingress Route existiert.
+
+Ein 404 bedeutet:
 
 ```text
-192.168.122.10:6443
+Traefik ist erreichbar,
+aber für diesen Host gibt es keine Route.
 ```
 
-Die HAProxy Konfiguration wird aus folgendem Template erzeugt:
+### HTTPS zeigt falsches Zertifikat
+
+Prüfen:
+
+```bash
+curl -v https://whoami.<DOMAIN>
+kubectl get certificate -n demo
+kubectl describe certificate whoami-tls -n demo
+```
+
+### Connection refused
+
+Prüfen:
+
+```bash
+ssh k3s-lb-1 "sudo ss -tulpn | grep -E ':80|:443'"
+kubectl get svc -n traefik
+```
+
+Mögliche Ursachen:
 
 ```text
-cluster/ansible/templates/haproxy.cfg.j2
+FRITZ!Box Freigabe zeigt auf falsches Gerät
+HAProxy läuft nicht
+Traefik ist nicht installiert
+NodePort Service fehlt
 ```
 
-Später kann HAProxy zusätzlich für HTTP und HTTPS Ingress Traffic genutzt werden. Die vorbereiteten Ports in `group_vars/all.yml` sind:
+## Aktueller Zielzustand
 
-```yaml
-traefik_http_port: 30080
-traefik_https_port: 30443
-```
-
-Diese Werte müssen zur späteren Traefik Installation passen.
-
-## K3s Konfiguration
-
-Das eingebaute K3s Traefik wird deaktiviert:
-
-```yaml
-disable_traefik: true
-```
-
-Dadurch kann Traefik später kontrolliert per Helm installiert werden.
-
-Server Nodes werden getaintet:
-
-```yaml
-taint_servers: true
-```
-
-Dadurch laufen normale Workloads nicht automatisch auf dem Control Plane Node.
-
-## Aktueller Cluster Zustand
-
-Ein erfolgreicher Cluster Aufbau sieht zum Beispiel so aus:
+Ein erfolgreicher Zielzustand sieht so aus:
 
 ```text
-NAME                STATUS   ROLES                INTERNAL-IP
-k3s-agent-gpu-1     Ready    worker               192.168.122.21
-k3s-agent-tools-1   Ready    worker               192.168.122.22
-k3s-server-1        Ready    control-plane,etcd    192.168.122.11
+DNS zeigt auf feste öffentliche IPv4
+FRITZ!Box leitet 80 und 443 auf k3s-lb-1 weiter
+k3s-lb-1 läuft im LAN unter 192.168.178.50
+HAProxy leitet an Traefik NodePorts weiter
+Traefik routet Ingress Ressourcen
+cert-manager erstellt Let’s Encrypt Zertifikate
+whoami ist per HTTPS erreichbar
 ```
 
-Die Labels sehen zum Beispiel so aus:
+Erfolgreicher Test:
+
+```bash
+curl -v https://whoami.<DOMAIN>
+```
+
+Erwartung:
 
 ```text
-k3s-agent-gpu-1     workload-type=ai      accelerator=nvidia
-k3s-agent-tools-1   workload-type=tools
+SSL certificate verified
+HTTP/2 200
 ```
-
-## Cleanup
-
-Der K3s Cluster kann entfernt werden mit:
-
-```bash
-make cluster-delete
-```
-
-Die VMs können gelöscht werden mit:
-
-```bash
-make vm-delete
-```
-
-Alles zusammen:
-
-```bash
-make cleanup
-```
-
-Das Cleanup Skript entfernt:
-
-- VMs
-- VM Disks
-- Seed ISOs
-- DHCP Reservierungen
-- SSH known hosts Einträge
-- lokalen SSH config Block
-- lokale cloud init Dateien
-
-Das Ubuntu Cloud Image bleibt standardmäßig erhalten, damit spätere Re Runs schneller sind.
-
-Zum Entfernen des Base Images:
-
-```bash
-REMOVE_BASE_IMAGE=1 make vm-delete
-```
-
-## Aktueller Stand
-
-Aktuell umgesetzt:
-
-- libvirt VM Erstellung
-- Ubuntu Cloud Image Provisionierung
-- cloud init für User, SSH und Basis Pakete
-- feste DHCP Reservierungen
-- SSH Config Einträge
-- HAProxy Installation über Ansible
-- K3s Installation über Ansible
-- Worker Labeling
-- GPU und Tools Node Labeling
-- lokale Kubeconfig Ausgabe
-
-Noch offen für spätere Ausbaustufen:
-
-- GPU Passthrough in die VM
-- NVIDIA Treiber in der GPU VM
-- NVIDIA Container Toolkit
-- NVIDIA Device Plugin oder GPU Operator
-- Traefik Installation per Helm
-- Keycloak für Authentifizierung
-- Weboberfläche für AI Workloads
-- Persistenter Storage
-- Monitoring
-- GitOps

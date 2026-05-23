@@ -205,7 +205,11 @@ ethernets:
       addresses: [${LAN_DNS}]
 EOF
 
-  cloud-localds "$seed_local" "$cloud_init_dir/user-data" "$cloud_init_dir/meta-data" "$cloud_init_dir/network-config"
+  cloud-localds \
+    -N "$cloud_init_dir/network-config" \
+    "$seed_local" \
+    "$cloud_init_dir/user-data" \
+    "$cloud_init_dir/meta-data"
 
   sudo cp "$seed_local" "$seed_libvirt"
   sudo chmod 644 "$seed_libvirt"
