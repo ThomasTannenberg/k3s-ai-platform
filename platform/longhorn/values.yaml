@@ -1,0 +1,18 @@
+longhorn:
+  persistence:
+    defaultClass: true
+    defaultClassReplicaCount: 2
+    reclaimPolicy: Retain
+    defaultFsType: ext4
+
+  defaultSettings:
+    defaultReplicaCount: 2
+    replicaAutoBalance: best-effort
+    storageOverProvisioningPercentage: 100
+    storageMinimalAvailablePercentage: 15
+    defaultDataPath: /var/lib/longhorn
+    createDefaultDiskLabeledNodes: false
+    orphanAutoDeletion: true
+
+  ingress:
+    enabled: false

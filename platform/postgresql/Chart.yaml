@@ -1,0 +1,10 @@
+apiVersion: v2
+name: postgresql-wrapper
+description: Wrapper Chart for PostgreSQL used by Keycloak
+type: application
+version: 0.1.0
+
+dependencies:
+  - name: postgresql
+    version: 18.6.6
+    repository: https://charts.bitnami.com/bitnami

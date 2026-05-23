@@ -1,0 +1,10 @@
+apiVersion: v2
+name: longhorn-wrapper
+description: Longhorn wrapper chart for k3s AI platform
+type: application
+version: 0.1.0
+
+dependencies:
+  - name: longhorn
+    version: 1.11.2
+    repository: https://charts.longhorn.io

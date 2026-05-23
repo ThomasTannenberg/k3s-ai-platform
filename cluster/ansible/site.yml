@@ -428,6 +428,9 @@
           - "Pods:"
           - "{{ pods.stdout_lines }}"
 
+- name: Create local application secrets in Kubernetes
+  import_playbook: app-secrets.yaml
+
 - name: Local usage hint
   hosts: localhost
   connection: local
