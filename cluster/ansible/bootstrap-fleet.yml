@@ -1,0 +1,309 @@
+---
+- name: Bootstrap Fleet after K3s cluster creation
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    kubeconfig_path: "{{ playbook_dir }}/k3s.yaml"
+
+    # Standard: Secrets werden nicht mehr direkt durch Ansible erstellt.
+    # Die normalen Kubernetes Secrets entstehen über SealedSecrets aus dem Git Repository.
+    use_plain_kubernetes_secrets: false
+
+    # Optionaler Fallback für das alte Verhalten.
+    secrets_file_path: "{{ playbook_dir }}/group_vars/secrets.yml"
+    generated_password_length: 32
+
+    # Lokales Backup des Sealed Secrets Private Keys.
+    # Diese Datei liegt bewusst außerhalb von cluster/ansible und muss per .gitignore ausgeschlossen sein.
+    sealed_secrets_key_backup_path: "{{ playbook_dir }}/../../.local-secrets/sealed-secrets-key-backup.yaml"
+
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+
+  pre_tasks:
+    - name: Prüfen ob lokale Secret Datei vorhanden ist
+      stat:
+        path: "{{ secrets_file_path }}"
+      register: secrets_file
+      when: use_plain_kubernetes_secrets | bool
+
+    - name: Vorhandene Secret Datei lesen
+      slurp:
+        path: "{{ secrets_file_path }}"
+      register: existing_secrets_file
+      when:
+        - use_plain_kubernetes_secrets | bool
+        - secrets_file.stat.exists
+      no_log: true
+
+    - name: Prüfen ob vorhandene Secret Datei noch Platzhalter enthält
+      set_fact:
+        secrets_file_contains_placeholders: >-
+          {{
+            secrets_file.stat.exists and
+            (
+              'keycloak-db-password' in (existing_secrets_file.content | b64decode) or
+              'postgres-admin-password' in (existing_secrets_file.content | b64decode) or
+              'keycloak-admin-password' in (existing_secrets_file.content | b64decode)
+            )
+          }}
+      when:
+        - use_plain_kubernetes_secrets | bool
+        - secrets_file.stat.exists
+      no_log: true
+
+    - name: Secret Platzhalter Status setzen wenn Datei fehlt
+      set_fact:
+        secrets_file_contains_placeholders: false
+      when:
+        - use_plain_kubernetes_secrets | bool
+        - not secrets_file.stat.exists
+      no_log: true
+
+    - name: Zufällige Passwörter generieren
+      set_fact:
+        generated_keycloak_db_password: "{{ lookup('password', '/dev/null length=' ~ generated_password_length ~ ' chars=ascii_letters,digits') }}"
+        generated_postgres_admin_password: "{{ lookup('password', '/dev/null length=' ~ generated_password_length ~ ' chars=ascii_letters,digits') }}"
+        generated_keycloak_admin_password: "{{ lookup('password', '/dev/null length=' ~ generated_password_length ~ ' chars=ascii_letters,digits') }}"
+      when:
+        - use_plain_kubernetes_secrets | bool
+        - not secrets_file.stat.exists or secrets_file_contains_placeholders | bool
+      no_log: true
+
+    - name: Lokale Secret Datei mit generierten Passwörtern erstellen oder ersetzen
+      copy:
+        dest: "{{ secrets_file_path }}"
+        mode: "0600"
+        content: |
+          ---
+          # Diese Datei wurde automatisch von bootstrap-fleet.yml erzeugt.
+          # Sie enthält lokale Passwörter und darf nicht nach Git committed werden.
+
+          keycloak_db_password: "{{ generated_keycloak_db_password }}"
+          postgres_admin_password: "{{ generated_postgres_admin_password }}"
+          keycloak_admin_password: "{{ generated_keycloak_admin_password }}"
+      when:
+        - use_plain_kubernetes_secrets | bool
+        - not secrets_file.stat.exists or secrets_file_contains_placeholders | bool
+      no_log: true
+
+    - name: Lokale Secret Variablen laden
+      include_vars:
+        file: "{{ secrets_file_path }}"
+      when: use_plain_kubernetes_secrets | bool
+      no_log: true
+
+  tasks:
+    - name: Prüfen ob Kubeconfig vorhanden ist
+      stat:
+        path: "{{ kubeconfig_path }}"
+      register: kubeconfig_file
+
+    - name: Abbrechen wenn Kubeconfig fehlt
+      assert:
+        that:
+          - kubeconfig_file.stat.exists
+        fail_msg: "Kubeconfig fehlt. Bitte zuerst cluster-create ausführen."
+
+    - name: Prüfen ob Secret Variablen gesetzt sind
+      assert:
+        that:
+          - keycloak_db_password is defined
+          - postgres_admin_password is defined
+          - keycloak_admin_password is defined
+          - keycloak_db_password | length > 0
+          - postgres_admin_password | length > 0
+          - keycloak_admin_password | length > 0
+        fail_msg: "Secret Variablen konnten nicht geladen werden."
+      when: use_plain_kubernetes_secrets | bool
+      no_log: true
+
+    - name: Kubernetes API prüfen
+      command: kubectl get nodes
+      changed_when: false
+
+    - name: Helm prüfen
+      command: helm version
+      changed_when: false
+
+    - name: Fleet Helm Repository hinzufügen
+      command: helm repo add fleet https://rancher.github.io/fleet-helm-charts/
+      register: fleet_repo_add
+      changed_when: "'has been added' in fleet_repo_add.stdout"
+      failed_when:
+        - fleet_repo_add.rc != 0
+        - "'already exists' not in fleet_repo_add.stderr"
+
+    - name: Helm Repositories aktualisieren
+      command: helm repo update
+      changed_when: false
+
+    - name: Fleet CRDs installieren
+      command: >
+        helm upgrade --install fleet-crd fleet/fleet-crd
+        --namespace cattle-fleet-system
+        --create-namespace
+        --wait
+      changed_when: true
+
+    - name: Fleet Controller installieren
+      command: >
+        helm upgrade --install fleet fleet/fleet
+        --namespace cattle-fleet-system
+        --create-namespace
+        --wait
+      changed_when: true
+
+    - name: Warten bis Fleet Controller läuft
+      command: >
+        kubectl -n cattle-fleet-system wait
+        --for=condition=Ready pod
+        -l app=fleet-controller
+        --timeout=300s
+      changed_when: false
+
+    - name: fleet-local Namespace erstellen
+      command: kubectl create namespace fleet-local --dry-run=client -o yaml
+      register: fleet_local_namespace
+      changed_when: false
+
+    - name: fleet-local Namespace anwenden
+      command: kubectl apply -f -
+      args:
+        stdin: "{{ fleet_local_namespace.stdout }}"
+
+    - name: Namespace postgresql erstellen
+      command: kubectl create namespace postgresql --dry-run=client -o yaml
+      register: postgresql_namespace
+      changed_when: false
+
+    - name: Namespace postgresql anwenden
+      command: kubectl apply -f -
+      args:
+        stdin: "{{ postgresql_namespace.stdout }}"
+
+    - name: Namespace keycloak erstellen
+      command: kubectl create namespace keycloak --dry-run=client -o yaml
+      register: keycloak_namespace
+      changed_when: false
+
+    - name: Namespace keycloak anwenden
+      command: kubectl apply -f -
+      args:
+        stdin: "{{ keycloak_namespace.stdout }}"
+
+    - name: PostgreSQL Secret erzeugen
+      command: >
+        kubectl -n postgresql create secret generic keycloak-postgresql-auth
+        --from-literal=password={{ keycloak_db_password | quote }}
+        --from-literal=postgres-password={{ postgres_admin_password | quote }}
+        --dry-run=client -o yaml
+      register: postgresql_secret
+      changed_when: false
+      when: use_plain_kubernetes_secrets | bool
+      no_log: true
+
+    - name: PostgreSQL Secret anwenden
+      command: kubectl apply -f -
+      args:
+        stdin: "{{ postgresql_secret.stdout }}"
+      when: use_plain_kubernetes_secrets | bool
+      no_log: true
+
+    - name: Keycloak Admin Secret erzeugen
+      command: >
+        kubectl -n keycloak create secret generic keycloak-admin
+        --from-literal=admin-password={{ keycloak_admin_password | quote }}
+        --dry-run=client -o yaml
+      register: keycloak_admin_secret
+      changed_when: false
+      when: use_plain_kubernetes_secrets | bool
+      no_log: true
+
+    - name: Keycloak Admin Secret anwenden
+      command: kubectl apply -f -
+      args:
+        stdin: "{{ keycloak_admin_secret.stdout }}"
+      when: use_plain_kubernetes_secrets | bool
+      no_log: true
+
+    - name: Keycloak Datenbank Secret erzeugen
+      command: >
+        kubectl -n keycloak create secret generic keycloak-database
+        --from-literal=password={{ keycloak_db_password | quote }}
+        --dry-run=client -o yaml
+      register: keycloak_database_secret
+      changed_when: false
+      when: use_plain_kubernetes_secrets | bool
+      no_log: true
+
+    - name: Keycloak Datenbank Secret anwenden
+      command: kubectl apply -f -
+      args:
+        stdin: "{{ keycloak_database_secret.stdout }}"
+      when: use_plain_kubernetes_secrets | bool
+      no_log: true
+
+    - name: Fleet GitRepo anwenden
+      command: kubectl apply -f ../../fleet/gitrepo.yaml
+      args:
+        chdir: "{{ playbook_dir }}"
+
+    - name: Prüfen ob lokales Sealed Secrets Key Backup vorhanden ist
+      stat:
+        path: "{{ sealed_secrets_key_backup_path }}"
+      register: sealed_secrets_key_backup
+      no_log: true
+
+    - name: Hinweis ausgeben wenn kein lokales Sealed Secrets Key Backup vorhanden ist
+      debug:
+        msg:
+          - "Kein lokales Sealed Secrets Key Backup gefunden."
+          - "Pfad: {{ sealed_secrets_key_backup_path }}"
+          - "Wenn der Cluster neu erstellt wurde, können bestehende SealedSecrets aus Git nicht entschlüsselt werden."
+          - "In diesem Fall müssen die SealedSecrets manuell mit kubeseal neu erstellt und committed werden."
+      when: not sealed_secrets_key_backup.stat.exists
+
+    - name: Warten bis Sealed Secrets Controller Deployment existiert
+      command: >
+        kubectl -n kube-system get deployment sealed-secrets-controller
+      register: sealed_secrets_controller_deployment
+      changed_when: false
+      retries: 60
+      delay: 5
+      until: sealed_secrets_controller_deployment.rc == 0
+      when: sealed_secrets_key_backup.stat.exists
+
+    - name: Warten bis Sealed Secrets Controller verfügbar ist
+      command: >
+        kubectl -n kube-system rollout status deployment/sealed-secrets-controller
+        --timeout=300s
+      changed_when: false
+      when: sealed_secrets_key_backup.stat.exists
+
+    - name: Lokales Sealed Secrets Key Backup anwenden
+      command: kubectl apply -f "{{ sealed_secrets_key_backup_path }}"
+      when: sealed_secrets_key_backup.stat.exists
+      no_log: true
+
+    - name: Sealed Secrets Controller neu starten damit der Key geladen wird
+      command: kubectl -n kube-system rollout restart deployment/sealed-secrets-controller
+      when: sealed_secrets_key_backup.stat.exists
+
+    - name: Warten bis Sealed Secrets Controller nach Key Restore wieder läuft
+      command: >
+        kubectl -n kube-system rollout status deployment/sealed-secrets-controller
+        --timeout=300s
+      changed_when: false
+      when: sealed_secrets_key_backup.stat.exists
+
+    - name: Fleet Status anzeigen
+      command: kubectl get gitrepo,bundles,bundledeployments -A
+      register: fleet_status
+      changed_when: false
+
+    - name: Fleet Status ausgeben
+      debug:
+        var: fleet_status.stdout_lines

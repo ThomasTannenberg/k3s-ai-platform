@@ -1,0 +1,427 @@
+---
+# k3s Cluster Setup
+#
+# Ziel:
+#   1. HAProxy auf k3s-lb-1 als TCP LoadBalancer für Kubernetes API 6443
+#   2. k3s-server-1 initialisiert das embedded-etcd Cluster
+#   3. k3s-server-2 und k3s-server-3 joinen sequentiell
+#   4. k3s-agent-1 bis k3s-agent-3 joinen parallel
+#   5. Server Nodes bekommen optional NoSchedule Taint
+#   6. Agent Nodes bekommen nach dem Join ein Worker Role Label
+#   7. Traefik wird deaktiviert. Später manuel per HELM installiert
+#   8. Kubeconfig wird lokal als ./k3s.yaml abgelegt und auf die LB IP angepasst
+#
+# Token Handling:
+#   Ansible erzeugt einen lokalen Bootstrap Token für k3s-server-1.
+#   Danach wird der echte Node Token von k3s-server-1 gelesen.
+#   Dieser Token wird für alle weiteren Server und Agents verwendet.
+
+
+# Play 1: Pre-flight Checks auf dem Controller Host
+- name: Pre-flight checks
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Lokale Pflichtdateien prüfen
+      stat:
+        path: "{{ item }}"
+      register: required_files
+      loop:
+        - "{{ playbook_dir }}/inventory.ini"
+        - "{{ playbook_dir }}/group_vars/all.yml"
+        - "{{ playbook_dir }}/templates/haproxy.cfg.j2"
+
+    - name: Abbrechen, falls Pflichtdateien fehlen
+      assert:
+        that:
+          - item.stat.exists
+        fail_msg: "Pflichtdatei fehlt: {{ item.item }}"
+      loop: "{{ required_files.results }}"
+
+    - name: Inventory Gruppen prüfen
+      assert:
+        that:
+          - groups['k3s_lb'] | length == 1
+          - groups['k3s_init'] | length == 1
+          - groups['k3s_servers'] | length >= 1
+          - groups['k3s_agents'] | length >= 1
+        fail_msg: |
+          Inventory Gruppen sind nicht korrekt.
+          Erwartet:
+            k3s_lb      genau 1 Host
+            k3s_init    genau 1 Host
+            k3s_servers mindestens 1 Host
+            k3s_agents  mindestens 1 Host
+
+    - name: Benötigte Variablen prüfen
+      assert:
+        that:
+          - lb_ip is defined
+          - api_port is defined
+          - disable_traefik is defined
+          - taint_servers is defined
+        fail_msg: |
+          Mindestens eine benötigte Variable fehlt.
+          Prüfe group_vars/all.yml.
+          Erwartet:
+            lb_ip
+            api_port
+            disable_traefik
+            taint_servers
+
+
+# Play 2: HAProxy installieren und konfigurieren
+- name: HAProxy Load Balancer
+  hosts: k3s_lb
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: apt Cache aktualisieren
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: HAProxy installieren
+      apt:
+        name: haproxy
+        state: present
+
+    - name: HAProxy Konfiguration ausrollen
+      template:
+        src: haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        owner: root
+        group: root
+        mode: "0644"
+        validate: "haproxy -c -f %s"
+      notify: Restart haproxy
+
+    - name: Handler sofort ausführen
+      meta: flush_handlers
+
+    - name: HAProxy aktivieren und starten
+      systemd:
+        name: haproxy
+        enabled: yes
+        state: started
+
+    - name: Prüfen ob HAProxy auf Kubernetes API Port lauscht
+      wait_for:
+        host: 127.0.0.1
+        port: "{{ api_port }}"
+        timeout: 30
+
+  handlers:
+    - name: Restart haproxy
+      systemd:
+        name: haproxy
+        state: restarted
+
+
+# Play 3: Ersten k3s Server initialisieren
+- name: Bootstrap first k3s server
+  hosts: k3s_init
+  become: yes
+  gather_facts: yes
+  vars:
+    bootstrap_token: "{{ lookup('password', playbook_dir + '/.k3s-bootstrap-token length=64 chars=ascii_letters,digits') }}"
+    k3s_server_init_args: >-
+      server
+      --cluster-init
+      --tls-san {{ lb_ip }}
+      --node-ip {{ ansible_host }}
+      --advertise-address {{ ansible_host }}
+      {% if disable_traefik | bool %}--disable traefik{% endif %}
+      {% if taint_servers | bool %}--node-taint node-role.kubernetes.io/control-plane=true:NoSchedule{% endif %}
+  tasks:
+    - name: Prüfen ob k3s bereits installiert ist
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: k3s initial installieren
+      shell: |
+        curl -sfL https://get.k3s.io | \
+          K3S_TOKEN='{{ bootstrap_token }}' \
+          INSTALL_K3S_EXEC="{{ k3s_server_init_args }}" \
+          sh -s -
+      when: not k3s_binary.stat.exists
+      no_log: true
+
+    - name: k3s Dienst aktivieren und starten
+      systemd:
+        name: k3s
+        enabled: yes
+        state: started
+
+    - name: Warten bis lokaler API Port erreichbar ist
+      wait_for:
+        host: 127.0.0.1
+        port: "{{ api_port }}"
+        delay: 3
+        timeout: 300
+
+    - name: Warten bis erster Node im Cluster existiert
+      command: k3s kubectl get node {{ inventory_hostname }}
+      register: init_node_exists
+      until: init_node_exists.rc == 0
+      retries: 60
+      delay: 5
+      changed_when: false
+
+    - name: Warten bis erster Node Ready ist
+      command: >
+        k3s kubectl wait
+        --for=condition=Ready
+        node/{{ inventory_hostname }}
+        --timeout=300s
+      changed_when: false
+
+    - name: Cluster Node Token von k3s-server-1 lesen
+      command: cat /var/lib/rancher/k3s/server/node-token
+      register: cluster_node_token
+      changed_when: false
+      no_log: true
+
+    - name: Cluster Join Token für weitere Nodes speichern
+      set_fact:
+        k3s_join_token: "{{ cluster_node_token.stdout }}"
+      no_log: true
+
+
+# Play 4: Zusätzliche k3s Server joinen
+- name: Join additional k3s servers
+  hosts: k3s_servers
+  become: yes
+  gather_facts: yes
+  serial: 1
+  vars:
+    k3s_server_join_args: >-
+      server
+      --server https://{{ lb_ip }}:{{ api_port }}
+      --tls-san {{ lb_ip }}
+      --node-ip {{ ansible_host }}
+      --advertise-address {{ ansible_host }}
+      {% if disable_traefik | bool %}--disable traefik{% endif %}
+      {% if taint_servers | bool %}--node-taint node-role.kubernetes.io/control-plane=true:NoSchedule{% endif %}
+  tasks:
+    - name: Prüfen ob k3s bereits installiert ist
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: k3s Server Join installieren
+      shell: |
+        curl -sfL https://get.k3s.io | \
+          K3S_TOKEN='{{ hostvars[groups["k3s_init"][0]].k3s_join_token }}' \
+          INSTALL_K3S_EXEC="{{ k3s_server_join_args }}" \
+          sh -s -
+      when: not k3s_binary.stat.exists
+      no_log: true
+
+    - name: k3s Dienst aktivieren und starten
+      systemd:
+        name: k3s
+        enabled: yes
+        state: started
+
+    - name: Warten bis lokaler API Port erreichbar ist
+      wait_for:
+        host: 127.0.0.1
+        port: "{{ api_port }}"
+        timeout: 300
+
+    - name: Warten bis Server Node im Cluster registriert ist
+      delegate_to: "{{ groups['k3s_init'][0] }}"
+      become: yes
+      command: k3s kubectl get node {{ inventory_hostname }}
+      register: joined_server_exists
+      until: joined_server_exists.rc == 0
+      retries: 60
+      delay: 5
+      changed_when: false
+
+    - name: Warten bis Server Node Ready ist
+      delegate_to: "{{ groups['k3s_init'][0] }}"
+      become: yes
+      command: >
+        k3s kubectl wait
+        --for=condition=Ready
+        node/{{ inventory_hostname }}
+        --timeout=300s
+      changed_when: false
+
+# Play 5: k3s Agents joinen
+
+- name: Join k3s agents
+  hosts: k3s_agents
+  become: yes
+  gather_facts: yes
+  vars:
+    k3s_agent_args: >-
+      agent
+      --node-ip {{ ansible_host }}
+  tasks:
+    - name: Prüfen ob k3s bereits installiert ist
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: k3s Agent installieren
+      shell: |
+        curl -sfL https://get.k3s.io | \
+          K3S_URL='https://{{ lb_ip }}:{{ api_port }}' \
+          K3S_TOKEN='{{ hostvars[groups["k3s_init"][0]].k3s_join_token }}' \
+          INSTALL_K3S_EXEC="{{ k3s_agent_args }}" \
+          sh -s -
+      when: not k3s_binary.stat.exists
+      no_log: true
+
+    - name: k3s-agent Dienst aktivieren und starten
+      systemd:
+        name: k3s-agent
+        enabled: yes
+        state: started
+
+    - name: Warten bis Agent Node im Cluster registriert ist
+      delegate_to: "{{ groups['k3s_init'][0] }}"
+      become: yes
+      command: k3s kubectl get node {{ inventory_hostname }}
+      register: agent_node_exists
+      until: agent_node_exists.rc == 0
+      retries: 60
+      delay: 5
+      changed_when: false
+
+    - name: Warten bis Agent Node Ready ist
+      delegate_to: "{{ groups['k3s_init'][0] }}"
+      become: yes
+      command: >
+        k3s kubectl wait
+        --for=condition=Ready
+        node/{{ inventory_hostname }}
+        --timeout=300s
+      changed_when: false
+
+    - name: Worker Role Label setzen
+      delegate_to: "{{ groups['k3s_init'][0] }}"
+      become: yes
+      command: >
+        k3s kubectl label node {{ inventory_hostname }}
+        node-role.kubernetes.io/worker=true
+        --overwrite
+      changed_when: false
+
+# Play 6: Warten bis alle erwarteten Nodes existieren und Ready sind
+- name: Wait for all expected nodes
+  hosts: k3s_init
+  become: yes
+  gather_facts: no
+  vars:
+    expected_nodes: "{{ groups['k3s_init'] + groups['k3s_servers'] + groups['k3s_agents'] }}"
+  tasks:
+    - name: Warten bis alle erwarteten Nodes im Cluster registriert sind
+      shell: |
+        set -e
+        for node in {{ expected_nodes | join(' ') }}; do
+          k3s kubectl get node "$node" >/dev/null 2>&1
+        done
+      register: expected_nodes_exist
+      until: expected_nodes_exist.rc == 0
+      retries: 60
+      delay: 5
+      changed_when: false
+
+    - name: Warten bis alle erwarteten Nodes Ready sind
+      shell: |
+        set -e
+        for node in {{ expected_nodes | join(' ') }}; do
+          status="$(k3s kubectl get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+          test "$status" = "True"
+        done
+      register: expected_nodes_ready
+      until: expected_nodes_ready.rc == 0
+      retries: 60
+      delay: 5
+      changed_when: false
+
+
+# Play 7: Kubeconfig auf den Controller Host holen
+- name: Fetch kubeconfig
+  hosts: k3s_init
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Kubeconfig auf Controller kopieren
+      fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ playbook_dir }}/k3s.yaml"
+        flat: yes
+
+    - name: LoadBalancer IP in lokaler Kubeconfig setzen
+      delegate_to: localhost
+      become: no
+      replace:
+        path: "{{ playbook_dir }}/k3s.yaml"
+        regexp: "127\\.0\\.0\\.1"
+        replace: "{{ lb_ip }}"
+
+    - name: Kubeconfig nur für lokalen User lesbar machen
+      delegate_to: localhost
+      become: no
+      file:
+        path: "{{ playbook_dir }}/k3s.yaml"
+        mode: "0600"
+
+
+# Play 8: Cluster Status anzeigen
+- name: Cluster summary
+  hosts: k3s_init
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Nodes anzeigen
+      command: k3s kubectl get nodes -o wide
+      register: nodes
+      changed_when: false
+
+    - name: Taints anzeigen
+      command: >
+        k3s kubectl get nodes
+        -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+      register: taints
+      changed_when: false
+
+    - name: Pods anzeigen
+      command: k3s kubectl get pods -A -o wide
+      register: pods
+      changed_when: false
+
+    - name: Cluster Übersicht
+      debug:
+        msg:
+          - "Nodes:"
+          - "{{ nodes.stdout_lines }}"
+          - "Taints:"
+          - "{{ taints.stdout_lines }}"
+          - "Pods:"
+          - "{{ pods.stdout_lines }}"
+
+# Play 9: Hinweis zur Kubeconfig
+
+- name: Local usage hint
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Hinweis anzeigen
+      debug:
+        msg:
+          - "Kubeconfig wurde gespeichert unter:"
+          - "{{ playbook_dir }}/k3s.yaml"
+          - "Nutzung:"
+          - "export KUBECONFIG={{ playbook_dir }}/k3s.yaml"
+          - "source ~/.bashrc"
+          - "kubectl get nodes -o wide"
+          - "helm list -A"

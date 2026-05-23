@@ -1,0 +1,48 @@
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    daemon
+
+defaults
+    log global
+    mode tcp
+    option tcplog
+    timeout connect 5s
+    timeout client  10m
+    timeout server  10m
+
+# Kubernetes API
+frontend k3s_api
+    bind 0.0.0.0:{{ api_port }}
+    default_backend k3s_servers
+
+backend k3s_servers
+    balance roundrobin
+    option tcp-check
+{% for host in (groups['k3s_init'] + groups['k3s_servers']) %}
+    server {{ host }} {{ hostvars[host].ansible_host }}:{{ api_port }} check
+{% endfor %}
+
+# HTTP Ingress via Traefik NodePort
+frontend traefik_http
+    bind 0.0.0.0:80
+    default_backend traefik_http_nodes
+
+backend traefik_http_nodes
+    balance roundrobin
+    option tcp-check
+{% for host in groups['k3s_agents'] %}
+    server {{ host }} {{ hostvars[host].ansible_host }}:{{ traefik_http_port }} check
+{% endfor %}
+
+# HTTPS Ingress via Traefik NodePort
+frontend traefik_https
+    bind 0.0.0.0:443
+    default_backend traefik_https_nodes
+
+backend traefik_https_nodes
+    balance roundrobin
+    option tcp-check
+{% for host in groups['k3s_agents'] %}
+    server {{ host }} {{ hostvars[host].ansible_host }}:{{ traefik_https_port }} check
+{% endfor %}

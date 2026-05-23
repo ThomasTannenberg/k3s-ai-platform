@@ -1,0 +1,36 @@
+#cloud-config
+hostname: k3s-agent-gpu-1
+preserve_hostname: false
+manage_etc_hosts: true
+timezone: Europe/Berlin
+
+users:
+  - name: k3sadmin
+    passwd: "$6$zgwbDq6DpSV6BPqw$PMujNVIbmfEFi.i1X3/chv90xn8cdD7u85jVzVeqzfqHMokMOdwa6FgoNkxf50pFAUKgEIohD7d72TL5clt1//"
+    lock_passwd: false
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    groups: [sudo, adm]
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDUzEcgT6ZpMq1rQE/4PTbegvzS4kbsxDEV52zpQIixp Thomas@Tannenberg.online
+
+ssh_pwauth: false
+disable_root: true
+
+package_update: true
+package_upgrade: false
+packages:
+  - qemu-guest-agent
+  - curl
+  - ca-certificates
+  - vim
+  - net-tools
+
+growpart:
+  mode: auto
+  devices: ['/']
+  ignore_growroot_disabled: false
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - systemctl restart ssh
