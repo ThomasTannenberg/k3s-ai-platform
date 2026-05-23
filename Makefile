@@ -59,7 +59,7 @@ cluster-create:
 cluster-delete:
 	cd cluster/ansible && ansible-playbook uninstall.yml
 
-install: host-bridge vm-create cluster-create
+install: vm-create cluster-create
 
 validate:
 	@echo "------------------------- Nodes ----------------------------"
