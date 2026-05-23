@@ -1,26 +1,24 @@
 ---
-# ============================================================================
-# k3s + HAProxy von allen Nodes entfernen
-# Lässt die VMs selbst unangetastet — nutze /99-cleanup.sh aus dem
-# VM-Setup, wenn du auch die VMs wegwerfen willst.
-# ============================================================================
+# k3s und HAProxy von allen Nodes entfernen.
+# Die VMs selbst bleiben bestehen.
+# Zum Löschen der VMs cluster/libvirt/99-cleanup.sh verwenden.
 
-- name: k3s-Agents deinstallieren
+- name: k3s Agents deinstallieren
   hosts: k3s_agents
   become: yes
   gather_facts: no
   tasks:
-    - name: k3s-agent-uninstall.sh ausführen (falls vorhanden)
+    - name: k3s-agent-uninstall.sh ausführen falls vorhanden
       command: /usr/local/bin/k3s-agent-uninstall.sh
       args:
         removes: /usr/local/bin/k3s-agent-uninstall.sh
 
-- name: k3s-Server deinstallieren
+- name: k3s Server deinstallieren
   hosts: k3s_servers:k3s_init
   become: yes
   gather_facts: no
   tasks:
-    - name: k3s-uninstall.sh ausführen (falls vorhanden)
+    - name: k3s-uninstall.sh ausführen falls vorhanden
       command: /usr/local/bin/k3s-uninstall.sh
       args:
         removes: /usr/local/bin/k3s-uninstall.sh
@@ -36,17 +34,22 @@
         state: stopped
       ignore_errors: yes
 
-    - name: HAProxy-Paket purgen
+    - name: HAProxy Paket entfernen
       apt:
         name: haproxy
         state: absent
         purge: yes
 
-- name: Lokale kubeconfig entfernen
+- name: Lokale kubeconfig und Bootstrap Token entfernen
   hosts: localhost
   gather_facts: no
   tasks:
     - name: k3s.yaml löschen
       file:
         path: "{{ playbook_dir }}/k3s.yaml"
+        state: absent
+
+    - name: Bootstrap Token löschen
+      file:
+        path: "{{ playbook_dir }}/.k3s-bootstrap-token"
         state: absent

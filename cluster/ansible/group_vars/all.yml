@@ -1,21 +1,22 @@
 ---
-# Load-Balancer (HAProxy) Adresse, unter der die k3s-API erreichbar ist.
+# LoadBalancer Adresse für die k3s API.
 lb_ip: 192.168.122.10
 api_port: 6443
 
-# NodePorts des Traefik Ingress Controllers.
-# HAProxy leitet später Port 80 und 443 auf diese NodePorts der Agent Nodes weiter.
+# NodePorts des späteren Traefik Ingress Controllers.
+# HAProxy leitet Port 80 und 443 auf diese NodePorts der Agent Nodes weiter.
+# Diese Werte müssen später zur Traefik Helm Installation passen.
 traefik_http_port: 30080
 traefik_https_port: 30443
 
-# Cluster-Token. Wird per ENV-Variable übergeben:
-#   export K3S_TOKEN="$(openssl rand -hex 32)"
-# Niemals committen!
-# default('', true): liefert leeren String wenn ENV fehlt → nie Undefined.
+# Optionaler Token über ENV Variable.
+# Aktuell erzeugt das Playbook selbst einen lokalen Bootstrap Token.
+# Dieser Wert bleibt für spätere Erweiterungen erhalten.
 k3s_token: "{{ lookup('env', 'K3S_TOKEN') | default('', true) }}"
 
-# Eingebautes Traefik abschalten, damit du es selbst per Helm verwalten kannst.
+# Eingebautes K3s Traefik wird deaktiviert.
+# Traefik soll später selbst per Helm installiert werden.
 disable_traefik: true
 
-# Server-Nodes sollen keine Workloads tragen (Control-Plane-only).
+# Server Nodes sollen keine normalen Workloads tragen.
 taint_servers: true

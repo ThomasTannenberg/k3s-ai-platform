@@ -2,22 +2,21 @@
 # k3s Cluster Setup
 #
 # Ziel:
-#   1. HAProxy auf k3s-lb-1 als TCP LoadBalancer für Kubernetes API 6443
-#   2. k3s-server-1 initialisiert das embedded-etcd Cluster
-#   3. k3s-server-2 und k3s-server-3 joinen sequentiell
-#   4. k3s-agent-1 bis k3s-agent-3 joinen parallel
-#   5. Server Nodes bekommen optional NoSchedule Taint
-#   6. Agent Nodes bekommen nach dem Join ein Worker Role Label
-#   7. Traefik wird deaktiviert. Später manuel per HELM installiert
-#   8. Kubeconfig wird lokal als ./k3s.yaml abgelegt und auf die LB IP angepasst
+#   1. HAProxy auf k3s-lb-1 als TCP LoadBalancer für die Kubernetes API auf Port 6443
+#   2. k3s-server-1 initialisiert das Cluster
+#   3. Zusätzliche Server Nodes können optional über k3s_servers joinen
+#   4. k3s-agent-gpu-1 und k3s-agent-tools-1 joinen als Worker Nodes
+#   5. Server Nodes bekommen optional einen NoSchedule Taint
+#   6. Agent Nodes bekommen ein Worker Role Label
+#   7. GPU und Tools Node bekommen zusätzliche Labels
+#   8. Das eingebaute K3s Traefik wird deaktiviert
+#   9. Die Kubeconfig wird lokal als ./k3s.yaml abgelegt und auf die LoadBalancer IP angepasst
 #
 # Token Handling:
 #   Ansible erzeugt einen lokalen Bootstrap Token für k3s-server-1.
 #   Danach wird der echte Node Token von k3s-server-1 gelesen.
-#   Dieser Token wird für alle weiteren Server und Agents verwendet.
+#   Dieser Token wird für weitere Server und Agents verwendet.
 
-
-# Play 1: Pre-flight Checks auf dem Controller Host
 - name: Pre-flight checks
   hosts: localhost
   connection: local
@@ -44,14 +43,14 @@
         that:
           - groups['k3s_lb'] | length == 1
           - groups['k3s_init'] | length == 1
-          - groups['k3s_servers'] | length >= 1
+          - groups['k3s_servers'] is defined
           - groups['k3s_agents'] | length >= 1
         fail_msg: |
           Inventory Gruppen sind nicht korrekt.
           Erwartet:
             k3s_lb      genau 1 Host
             k3s_init    genau 1 Host
-            k3s_servers mindestens 1 Host
+            k3s_servers darf leer sein
             k3s_agents  mindestens 1 Host
 
     - name: Benötigte Variablen prüfen
@@ -59,6 +58,8 @@
         that:
           - lb_ip is defined
           - api_port is defined
+          - traefik_http_port is defined
+          - traefik_https_port is defined
           - disable_traefik is defined
           - taint_servers is defined
         fail_msg: |
@@ -67,12 +68,12 @@
           Erwartet:
             lb_ip
             api_port
+            traefik_http_port
+            traefik_https_port
             disable_traefik
             taint_servers
 
-
-# Play 2: HAProxy installieren und konfigurieren
-- name: HAProxy Load Balancer
+- name: HAProxy LoadBalancer
   hosts: k3s_lb
   become: yes
   gather_facts: yes
@@ -118,8 +119,6 @@
         name: haproxy
         state: restarted
 
-
-# Play 3: Ersten k3s Server initialisieren
 - name: Bootstrap first k3s server
   hosts: k3s_init
   become: yes
@@ -178,7 +177,7 @@
         --timeout=300s
       changed_when: false
 
-    - name: Cluster Node Token von k3s-server-1 lesen
+    - name: Cluster Node Token von erstem Server lesen
       command: cat /var/lib/rancher/k3s/server/node-token
       register: cluster_node_token
       changed_when: false
@@ -189,8 +188,6 @@
         k3s_join_token: "{{ cluster_node_token.stdout }}"
       no_log: true
 
-
-# Play 4: Zusätzliche k3s Server joinen
 - name: Join additional k3s servers
   hosts: k3s_servers
   become: yes
@@ -252,8 +249,6 @@
         --timeout=300s
       changed_when: false
 
-# Play 5: k3s Agents joinen
-
 - name: Join k3s agents
   hosts: k3s_agents
   become: yes
@@ -313,7 +308,27 @@
         --overwrite
       changed_when: false
 
-# Play 6: Warten bis alle erwarteten Nodes existieren und Ready sind
+    - name: GPU Node Label setzen
+      delegate_to: "{{ groups['k3s_init'][0] }}"
+      become: yes
+      command: >
+        k3s kubectl label node {{ inventory_hostname }}
+        workload-type=ai
+        accelerator=nvidia
+        --overwrite
+      when: "'gpu' in inventory_hostname"
+      changed_when: false
+
+    - name: Tools Node Label setzen
+      delegate_to: "{{ groups['k3s_init'][0] }}"
+      become: yes
+      command: >
+        k3s kubectl label node {{ inventory_hostname }}
+        workload-type=tools
+        --overwrite
+      when: "'tools' in inventory_hostname"
+      changed_when: false
+
 - name: Wait for all expected nodes
   hosts: k3s_init
   become: yes
@@ -346,8 +361,6 @@
       delay: 5
       changed_when: false
 
-
-# Play 7: Kubeconfig auf den Controller Host holen
 - name: Fetch kubeconfig
   hosts: k3s_init
   become: yes
@@ -374,8 +387,6 @@
         path: "{{ playbook_dir }}/k3s.yaml"
         mode: "0600"
 
-
-# Play 8: Cluster Status anzeigen
 - name: Cluster summary
   hosts: k3s_init
   become: yes
@@ -384,6 +395,13 @@
     - name: Nodes anzeigen
       command: k3s kubectl get nodes -o wide
       register: nodes
+      changed_when: false
+
+    - name: Labels anzeigen
+      command: >
+        k3s kubectl get nodes
+        --show-labels
+      register: labels
       changed_when: false
 
     - name: Taints anzeigen
@@ -403,12 +421,12 @@
         msg:
           - "Nodes:"
           - "{{ nodes.stdout_lines }}"
+          - "Labels:"
+          - "{{ labels.stdout_lines }}"
           - "Taints:"
           - "{{ taints.stdout_lines }}"
           - "Pods:"
           - "{{ pods.stdout_lines }}"
-
-# Play 9: Hinweis zur Kubeconfig
 
 - name: Local usage hint
   hosts: localhost
@@ -422,6 +440,6 @@
           - "{{ playbook_dir }}/k3s.yaml"
           - "Nutzung:"
           - "export KUBECONFIG={{ playbook_dir }}/k3s.yaml"
-          - "source ~/.bashrc"
           - "kubectl get nodes -o wide"
+          - "kubectl get nodes --show-labels"
           - "helm list -A"
