@@ -1,0 +1,4 @@
+helm upgrade --install traefik platform/traefik \
+  --namespace traefik \
+  --create-namespace \
+  -f platform/traefik/values.yaml

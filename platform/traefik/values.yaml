@@ -1,0 +1,58 @@
+traefik:
+  deployment:
+    replicas: 1
+
+  nodeSelector:
+    workload-type: tools
+
+  service:
+    enabled: true
+    type: NodePort
+    spec:
+      type: NodePort
+
+  ports:
+    web:
+      port: 8000
+      expose:
+        default: true
+      exposedPort: 80
+      protocol: TCP
+      nodePort: 30080
+
+    websecure:
+      port: 8443
+      expose:
+        default: true
+      exposedPort: 443
+      protocol: TCP
+      nodePort: 30443
+      http:
+        tls:
+          enabled: true
+
+  providers:
+    kubernetesCRD:
+      enabled: true
+      allowCrossNamespace: false
+
+    kubernetesIngress:
+      enabled: true
+
+  ingressClass:
+    enabled: true
+    isDefaultClass: true
+
+  logs:
+    general:
+      level: INFO
+
+    access:
+      enabled: true
+
+  api:
+    dashboard: true
+
+  global:
+    checkNewVersion: false
+    sendAnonymousUsage: false

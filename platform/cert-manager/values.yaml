@@ -1,0 +1,21 @@
+cert-manager:
+  crds:
+    enabled: true
+
+  nodeSelector:
+    workload-type: tools
+
+  webhook:
+    nodeSelector:
+      workload-type: tools
+
+  cainjector:
+    nodeSelector:
+      workload-type: tools
+
+  prometheus:
+    enabled: true
+
+  global:
+    leaderElection:
+      namespace: cert-manager

@@ -1,0 +1,11 @@
+apiVersion: v2
+name: cert-manager-wrapper
+description: Wrapper Chart for cert-manager on the local k3s AI platform
+type: application
+version: 0.1.0
+appVersion: "v1.18.2"
+
+dependencies:
+  - name: cert-manager
+    version: v1.18.2
+    repository: https://charts.jetstack.io

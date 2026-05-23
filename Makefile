@@ -1,5 +1,4 @@
-
-.PHONY: help vm-create vm-delete vm-list vm-start vm-shutdown vm-test cluster-create cluster-delete install validate cleanup
+.PHONY: help host-bridge vm-create vm-delete vm-list vm-start vm-shutdown vm-test cluster-create cluster-delete install validate cleanup traefik-deps traefik-install traefik-status traefik-delete cert-manager-deps cert-manager-install cert-manager-status cert-manager-delete
 
 KUBECONFIG_FILE := cluster/ansible/k3s.yaml
 
@@ -7,17 +6,23 @@ VMS := k3s-lb-1 k3s-server-1 k3s-agent-gpu-1 k3s-agent-tools-1
 
 help:
 	@echo "Verfügbare Ziele:"
-	@echo "  make vm-create          Host vorbereiten und VMs erstellen"
-	@echo "  make vm-delete          VMs löschen"
-	@echo "  make vm-list            VMs anzeigen"
-	@echo "  make vm-start           VMs starten"
-	@echo "  make vm-shutdown        VMs herunterfahren"
-	@echo "  make vm-test            SSH Zugriff auf VMs testen"
-	@echo "  make cluster-create     K3s Cluster per Ansible erstellen"
-	@echo "  make cluster-delete     K3s Cluster per Ansible entfernen"
-	@echo "  make install            VMs erstellen und Cluster erstellen"
-	@echo "  make validate           Cluster prüfen"
-	@echo "  make cleanup            Cluster und VMs löschen"
+	@echo "  make host-bridge            Host Bridge br0 für LAN VMs erstellen"
+	@echo "  make vm-create              Host vorbereiten und VMs erstellen"
+	@echo "  make vm-delete              VMs löschen"
+	@echo "  make vm-list                VMs anzeigen"
+	@echo "  make vm-start               VMs starten"
+	@echo "  make vm-shutdown            VMs herunterfahren"
+	@echo "  make vm-test                SSH Zugriff auf VMs testen"
+	@echo "  make cluster-create         K3s Cluster per Ansible erstellen"
+	@echo "  make cluster-delete         K3s Cluster per Ansible entfernen"
+	@echo "  make traefik-install        Traefik Wrapper Chart installieren"
+	@echo "  make cert-manager-install   cert-manager Wrapper Chart installieren"
+	@echo "  make install                VMs erstellen und Cluster erstellen"
+	@echo "  make validate               Cluster prüfen"
+	@echo "  make cleanup                Cluster und VMs löschen"
+
+host-bridge:
+	cd cluster/libvirt && ./02-create-host-bridge.sh
 
 vm-create:
 	cd cluster/libvirt && ./00-bootstrap.sh
@@ -75,5 +80,41 @@ validate:
 	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get svc -A
 	@echo "------------------------- Ingress --------------------------"
 	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get ingress -A || true
+	@echo "------------------------- Certificates ---------------------"
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get certificate -A || true
+	@echo "------------------------- ClusterIssuer --------------------"
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get clusterissuer || true
 
 cleanup: cluster-delete vm-delete
+
+traefik-deps:
+	helm dependency update platform/traefik
+
+traefik-install: traefik-deps
+	KUBECONFIG=$(KUBECONFIG_FILE) helm upgrade --install traefik platform/traefik --namespace traefik --create-namespace
+
+traefik-status:
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get pods -n traefik -o wide
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get svc -n traefik
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get ingressclass
+
+traefik-delete:
+	KUBECONFIG=$(KUBECONFIG_FILE) helm uninstall traefik --namespace traefik || true
+
+cert-manager-deps:
+	helm dependency update platform/cert-manager
+
+cert-manager-install: cert-manager-deps
+	KUBECONFIG=$(KUBECONFIG_FILE) helm upgrade --install cert-manager platform/cert-manager --namespace cert-manager --create-namespace
+
+cert-manager-status:
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get pods -n cert-manager -o wide
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get crd | grep cert-manager || true
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl get clusterissuer || true
+
+cert-manager-delete:
+	KUBECONFIG=$(KUBECONFIG_FILE) helm uninstall cert-manager --namespace cert-manager || true
+
+cert-manager-issuers:
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl apply -f platform/cert-manager/issuers/letsencrypt-staging.yaml
+	KUBECONFIG=$(KUBECONFIG_FILE) kubectl apply -f platform/cert-manager/issuers/letsencrypt-prod.yaml
