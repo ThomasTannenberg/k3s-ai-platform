@@ -1,0 +1,20 @@
+{{- if and .Values.realm .Values.realm.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm-config
+  namespace: {{ .Release.Namespace }}
+data:
+  realm.json: |
+    {
+      "realm": "{{ .Values.realm.name }}",
+      "enabled": true,
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
+      "duplicateEmailsAllowed": false,
+      "resetPasswordAllowed": true,
+      "rememberMe": true,
+      "verifyEmail": false,
+      "sslRequired": "external"
+    }
+{{- end }}

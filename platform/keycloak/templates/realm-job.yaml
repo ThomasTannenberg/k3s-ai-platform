@@ -1,0 +1,133 @@
+{{- if and .Values.realm .Values.realm.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-realm-setup
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: keycloak-realm-setup
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: realm-setup
+          image: "{{ .Values.keycloak.image.registry }}/{{ .Values.keycloak.image.repository }}:{{ .Values.keycloak.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KEYCLOAK_URL
+              value: {{ .Values.realm.keycloakUrl | quote }}
+
+            - name: KEYCLOAK_ADMIN_USER
+              value: {{ .Values.realm.admin.username | quote }}
+
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.realm.admin.existingSecret }}
+                  key: {{ .Values.realm.admin.passwordKey }}
+
+            - name: REALM_NAME
+              value: {{ .Values.realm.name | quote }}
+
+            - name: OPENWEBUI_CLIENT_ID
+              value: {{ .Values.realm.openWebui.clientId | quote }}
+
+            - name: OPENWEBUI_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.realm.openWebui.clientSecret.existingSecret }}
+                  key: {{ .Values.realm.openWebui.clientSecret.key }}
+
+            - name: OPENWEBUI_ROOT_URL
+              value: {{ .Values.realm.openWebui.rootUrl | quote }}
+
+            - name: OPENWEBUI_REDIRECT_URI
+              value: {{ .Values.realm.openWebui.redirectUri | quote }}
+
+            - name: OPENWEBUI_WEB_ORIGIN
+              value: {{ .Values.realm.openWebui.webOrigin | quote }}
+
+          volumeMounts:
+            - name: realm-config
+              mountPath: /realm
+              readOnly: true
+
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              export HOME=/tmp
+              mkdir -p /tmp/.keycloak
+              KCADM="/opt/bitnami/keycloak/bin/kcadm.sh"
+              
+              echo "Warte auf Keycloak..."
+              until curl -fsS "${KEYCLOAK_URL}/realms/master" >/dev/null; do
+                sleep 5
+              done
+
+              echo "Login als Admin..."
+              ${KCADM} config credentials \
+                --server "${KEYCLOAK_URL}" \
+                --realm master \
+                --user "${KEYCLOAK_ADMIN_USER}" \
+                --password "${KEYCLOAK_ADMIN_PASSWORD}"
+
+              echo "Realm prüfen..."
+              if ${KCADM} get "realms/${REALM_NAME}" >/dev/null 2>&1; then
+                echo "Realm existiert bereits. Aktualisiere Realm Einstellungen..."
+                ${KCADM} update "realms/${REALM_NAME}" -f /realm/realm.json
+              else
+                echo "Realm existiert nicht. Erstelle Realm..."
+                ${KCADM} create realms -f /realm/realm.json
+              fi
+
+              echo "Open WebUI Client prüfen..."
+              CLIENT_UUID="$(${KCADM} get clients -r "${REALM_NAME}" -q clientId="${OPENWEBUI_CLIENT_ID}" --fields id --format csv --noquotes | tail -n 1 || true)"
+
+              if [ -n "${CLIENT_UUID}" ]; then
+                echo "Client existiert bereits. Aktualisiere Client..."
+                ${KCADM} update "clients/${CLIENT_UUID}" -r "${REALM_NAME}" \
+                  -s clientId="${OPENWEBUI_CLIENT_ID}" \
+                  -s name="Open WebUI" \
+                  -s enabled=true \
+                  -s protocol=openid-connect \
+                  -s publicClient=false \
+                  -s standardFlowEnabled=true \
+                  -s directAccessGrantsEnabled=false \
+                  -s serviceAccountsEnabled=false \
+                  -s rootUrl="${OPENWEBUI_ROOT_URL}" \
+                  -s baseUrl="${OPENWEBUI_ROOT_URL}" \
+                  -s 'redirectUris=["'"${OPENWEBUI_REDIRECT_URI}"'"]' \
+                  -s 'webOrigins=["'"${OPENWEBUI_WEB_ORIGIN}"'"]' \
+                  -s secret="${OPENWEBUI_CLIENT_SECRET}"
+              else
+                echo "Client existiert nicht. Erstelle Client..."
+                ${KCADM} create clients -r "${REALM_NAME}" \
+                  -s clientId="${OPENWEBUI_CLIENT_ID}" \
+                  -s name="Open WebUI" \
+                  -s enabled=true \
+                  -s protocol=openid-connect \
+                  -s publicClient=false \
+                  -s standardFlowEnabled=true \
+                  -s directAccessGrantsEnabled=false \
+                  -s serviceAccountsEnabled=false \
+                  -s rootUrl="${OPENWEBUI_ROOT_URL}" \
+                  -s baseUrl="${OPENWEBUI_ROOT_URL}" \
+                  -s 'redirectUris=["'"${OPENWEBUI_REDIRECT_URI}"'"]' \
+                  -s 'webOrigins=["'"${OPENWEBUI_WEB_ORIGIN}"'"]' \
+                  -s secret="${OPENWEBUI_CLIENT_SECRET}"
+              fi
+
+              echo "Realm Setup abgeschlossen."
+
+      volumes:
+        - name: realm-config
+          configMap:
+            name: keycloak-realm-config
+{{- end }}

@@ -82,3 +82,23 @@ keycloak:
     limits:
       cpu: 1500m
       memory: 2Gi
+
+realm:
+  enabled: true
+  name: tannenberg
+
+  keycloakUrl: http://keycloak.keycloak.svc.cluster.local
+
+  admin:
+    username: admin
+    existingSecret: keycloak-admin-secret
+    passwordKey: admin-password
+
+  openWebui:
+    clientId: open-webui
+    clientSecret:
+      existingSecret: openwebui-oidc-client-secret
+      key: client-secret
+    rootUrl: https://ai.tannenberg.online
+    redirectUri: https://ai.tannenberg.online/oauth/oidc/callback
+    webOrigin: https://ai.tannenberg.online
