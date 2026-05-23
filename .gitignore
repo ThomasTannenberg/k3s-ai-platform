@@ -1,1 +1,6 @@
-.local-secrets
+# Lokale Secrets
+.local-secrets/
+
+# Temporäre Dateien
+/tmp/
+
