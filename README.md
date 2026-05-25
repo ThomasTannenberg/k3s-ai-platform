@@ -815,6 +815,9 @@ extraEnvVars:
 
   - name: ENABLE_SIGNUP
     value: "false"
+  
+  - name: BYPASS_MODEL_ACCESS_CONTROL
+    value: "true"
 
   - name: ENABLE_LOGIN_FORM
     value: "false"
