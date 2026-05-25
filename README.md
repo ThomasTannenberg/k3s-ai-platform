@@ -1,112 +1,67 @@
 # k3s AI Platform
 
-Lokale Kubernetes Plattform für AI Dienste auf Basis von KVM, libvirt, Ubuntu Cloud Images und K3s.
+Lokale Kubernetes Plattform für private AI Dienste.
 
-Das Projekt baut ein lokales Kubernetes Cluster als virtuelle Maschinen auf einem Ubuntu Host auf. Die Plattform stellt zentrale Dienste wie Traefik, cert-manager, Keycloak, PostgreSQL und später Open WebUI im Kubernetes Cluster bereit.
+Dieses Projekt erstellt ein lokales K3s Cluster auf virtuellen Maschinen. Im Cluster laufen Plattformdienste wie Traefik, cert-manager, Keycloak, PostgreSQL und Open WebUI.
 
-Die eigentliche KI Runtime läuft bewusst direkt auf dem Ubuntu Host. Dadurch kann die lokal verbaute NVIDIA RTX 5080 ohne PCI Passthrough genutzt werden. Auf GPU Passthrough in eine VM wird verzichtet, weil die RTX 5080 gleichzeitig als aktive Grafikkarte des Hosts genutzt wird.
+Die KI Runtime läuft bewusst direkt auf dem Ubuntu Host. Dadurch kann die lokale NVIDIA GPU ohne PCI Passthrough verwendet werden. Open WebUI läuft im Kubernetes Cluster und verbindet sich intern mit Ollama auf dem Host.
 
-Der externe Zugriff läuft über eine feste öffentliche IPv4 Adresse, eine FRITZ!Box, HAProxy, Traefik und cert-manager.
-
-Öffentliche Werte wie Domain und öffentliche IPv4 Adresse werden in dieser Dokumentation bewusst als Platzhalter beschrieben.
+Private Werte wie Domain, öffentliche IP Adresse, lokale IP Adressen, Secrets und Tokens werden in dieser Dokumentation nur als Platzhalter beschrieben.
 
 ## Ziel
 
-Ziel ist eine lokal betreibbare Plattform für private AI Dienste unter eigener Domain.
+Ziel ist ein reproduzierbares lokales AI Setup mit eigener Domain, zentralem Login und GPU Nutzung auf dem Host.
 
-Die Plattform deckt aktuell folgende Punkte ab:
+Das Setup umfasst:
 
 ```text
-lokale VM Umgebung mit KVM und libvirt
-K3s Cluster mit getrennten Rollen
-LoadBalancer VM als zentraler Einstiegspunkt
-HAProxy als vorgelagerter TCP LoadBalancer
+KVM und libvirt für lokale virtuelle Maschinen
+K3s als Kubernetes Distribution
+eine LoadBalancer VM als zentraler Einstiegspunkt
+HAProxy vor dem Cluster
 Traefik als Kubernetes Ingress Controller
-cert-manager für Let’s Encrypt Zertifikate
+cert-manager für TLS Zertifikate
 Keycloak als Identity Provider
-PostgreSQL als Datenbank für Keycloak
-Vorbereitung für Open WebUI unter ai.<DOMAIN>
-Ollama direkt auf dem Ubuntu Host mit RTX 5080
-reproduzierbarer Aufbau über Bash, Ansible und Helm Wrapper Charts
+PostgreSQL als Keycloak Datenbank
+Open WebUI als Weboberfläche
+Ollama direkt auf dem Ubuntu Host
+interner Kubernetes Service für Ollama
+UFW Firewall Schutz für die Ollama API
 ```
 
 ## Architektur
 
 Das Cluster besteht aus drei virtuellen Maschinen.
 
-| VM | IP | Rolle | RAM | vCPU | Disk |
-|---|---:|---|---:|---:|---:|
-| k3s-lb-1 | 192.168.178.50 | HAProxy LoadBalancer | 2048 MB | 1 | 20 GB |
-| k3s-server-1 | 192.168.178.51 | K3s Server, Control Plane, etcd | 4096 MB | 4 | 60 GB |
-| k3s-agent-tools-1 | 192.168.178.62 | Worker Node für Plattformdienste | 4096 MB | 4 | 100 GB |
+| System | Rolle |
+|---|---|
+| k3s-lb-1 | HAProxy LoadBalancer |
+| k3s-server-1 | K3s Server, Control Plane und etcd |
+| k3s-agent-tools-1 | Worker Node für Plattformdienste |
 
-Die KI Runtime läuft nicht als Kubernetes Pod.
-
-Sie läuft direkt auf dem Ubuntu Host:
+Die KI Runtime läuft nicht in einer VM und nicht als GPU Pod.
 
 | System | Rolle |
 |---|---|
-| Ubuntu Host | Ollama mit NVIDIA RTX 5080 |
+| Ubuntu Host | Ollama mit NVIDIA GPU |
 
-## Zielbild
+## Platzhalter
 
-```text
-Internet
-  -> feste öffentliche IPv4
-  -> FRITZ!Box
-  -> Portfreigabe TCP 80 und TCP 443
-  -> k3s-lb-1
-  -> HAProxy
-  -> Traefik
-  -> Kubernetes Ingress
-  -> Open WebUI
-  -> Ollama auf dem Ubuntu Host
-  -> RTX 5080
-```
+In dieser README werden keine privaten Werte genannt.
 
-## Warum Ollama direkt auf dem Host läuft
+| Platzhalter | Bedeutung |
+|---|---|
+| `<DOMAIN>` | eigene Domain |
+| `<PUBLIC_IPV4>` | öffentliche IPv4 Adresse |
+| `<LB_LAN_IP>` | LAN IP der LoadBalancer VM |
+| `<K3S_SERVER_LAN_IP>` | LAN IP der K3s Server VM |
+| `<TOOLS_NODE_LAN_IP>` | LAN IP der Tools Worker VM |
+| `<HOST_LAN_IP>` | LAN IP des Ubuntu Hosts |
+| `<POD_CIDR>` | Kubernetes Pod CIDR |
+| `<SERVICE_CIDR>` | Kubernetes Service CIDR |
+| `<REALM>` | Keycloak Realm für Open WebUI |
 
-Die RTX 5080 wird vom Ubuntu Host als aktive Grafikkarte verwendet.
-
-Ein PCI Passthrough dieser GPU an eine VM würde bedeuten, dass der Host die Karte nicht mehr für die eigene Bildausgabe nutzen kann. Deshalb wird kein GPU Passthrough verwendet.
-
-Stattdessen läuft die KI Runtime direkt auf dem Host.
-
-Vorteile dieses Ansatzes:
-
-```text
-kein PCI Passthrough erforderlich
-keine VFIO Bindings für die Haupt GPU
-kein Risiko für schwarze Bildschirme durch blockierte NVIDIA Treiber
-RTX 5080 bleibt normal auf dem Host nutzbar
-Open WebUI kann trotzdem im Kubernetes Cluster laufen
-```
-
-Nachteile dieses Ansatzes:
-
-```text
-Ollama wird nicht durch Kubernetes verwaltet
-Ollama läuft als Host Service
-Updates und Betrieb der KI Runtime erfolgen außerhalb von Helm
-```
-
-## Netzwerk Zielbild
-
-Der öffentliche Zugriff läuft über diesen Pfad:
-
-```text
-Internet
-  -> feste öffentliche IPv4
-  -> FRITZ!Box
-  -> Portfreigabe TCP 80 und TCP 443
-  -> k3s-lb-1
-  -> HAProxy
-  -> Traefik
-  -> Kubernetes Service
-  -> Pod
-```
-
-Beispiele:
+Beispiele für Dienste:
 
 ```text
 https://auth.<DOMAIN>
@@ -114,29 +69,104 @@ https://ai.<DOMAIN>
 https://whoami.<DOMAIN>
 ```
 
-## Öffentliche Werte
-
-Beispielhafte DNS Verwendung:
+## Zielbild
 
 ```text
-A   @     <PUBLIC_IPV4>
-A   *     <PUBLIC_IPV4>
-A   www   <PUBLIC_IPV4>
+Internet
+  -> öffentliche IPv4
+  -> Router
+  -> TCP 80 und TCP 443
+  -> k3s-lb-1
+  -> HAProxy
+  -> Traefik
+  -> Kubernetes Ingress
+  -> Open WebUI
+  -> Kubernetes Service ollama-host
+  -> Ollama auf dem Ubuntu Host
+  -> NVIDIA GPU
 ```
 
-Für lokale Tests und private Konfigurationen können diese Werte in einer nicht getrackten Datei gepflegt werden, zum Beispiel:
+## Warum Ollama auf dem Host läuft
+
+Die lokale NVIDIA GPU wird vom Ubuntu Host verwendet.
+
+Ein PCI Passthrough dieser GPU an eine VM würde bedeuten, dass der Host die GPU nicht mehr regulär nutzen kann. Deshalb wird auf GPU Passthrough verzichtet.
+
+Stattdessen läuft Ollama direkt auf dem Host.
+
+Vorteile:
 
 ```text
-.local-secrets/network.env
+kein PCI Passthrough notwendig
+keine VFIO Konfiguration notwendig
+GPU bleibt für den Host nutzbar
+Open WebUI kann trotzdem im Kubernetes Cluster laufen
 ```
 
-Diese Datei darf nicht nach GitHub.
+Nachteile:
+
+```text
+Ollama wird nicht durch Kubernetes verwaltet
+Ollama läuft als Host Service
+Updates der KI Runtime erfolgen außerhalb von Helm
+```
+
+## Nicht verwendete Komponenten
+
+Das aktuelle Zielsetup verwendet bewusst keine GPU VM.
+
+Nicht verwendet werden:
+
+```text
+k3s-agent-gpu-1 als VM
+PCI Passthrough
+VFIO Binding der Haupt GPU
+NVIDIA Device Plugin im Kubernetes Cluster
+nvidia.com/gpu Kubernetes Ressourcen
+```
+
+## Netzwerk
+
+Der öffentliche Zugriff läuft über den Router zur LoadBalancer VM.
+
+```text
+Internet
+  -> Router
+  -> TCP 80 und TCP 443
+  -> <LB_LAN_IP>
+  -> HAProxy
+  -> Traefik NodePorts
+  -> Kubernetes Ingress
+```
+
+Benötigte öffentliche Portfreigaben:
+
+```text
+TCP 80  -> <LB_LAN_IP>:80
+TCP 443 -> <LB_LAN_IP>:443
+```
+
+Nicht öffentlich freigeben:
+
+```text
+TCP 22
+TCP 6443
+TCP 11434
+libvirt Ports
+Host Management Ports
+```
+
+Port 80 wird für Let’s Encrypt HTTP01 benötigt.
+
+Port 443 wird für HTTPS Dienste benötigt.
+
+Port 11434 ist die Ollama API und darf nicht öffentlich erreichbar sein.
 
 ## DNS
 
-Die Domain wird beim DNS Anbieter verwaltet.
+Beim DNS Anbieter werden A Records auf die öffentliche IPv4 gesetzt.
 
-Benötigte DNS Records:
+Beispiel:
 
 ```text
 A   @     <PUBLIC_IPV4>
@@ -144,7 +174,7 @@ A   *     <PUBLIC_IPV4>
 A   www   <PUBLIC_IPV4>
 ```
 
-Damit zeigen die Hauptdomain, `www` und alle Subdomains auf die feste öffentliche IPv4 Adresse.
+Damit zeigen die Hauptdomain, `www` und alle Subdomains auf die öffentliche IPv4 Adresse.
 
 Beispiele:
 
@@ -156,9 +186,7 @@ auth.<DOMAIN>
 ai.<DOMAIN>
 ```
 
-Für den aktuellen Aufbau wird IPv4 verwendet.
-
-AAAA Records sollten nur gesetzt werden, wenn auch IPv6 sauber auf den eigenen Anschluss und den eigenen Einstiegspunkt zeigt. Andernfalls können Clients über IPv6 an einem falschen Ziel landen.
+AAAA Records sollten nur gesetzt werden, wenn IPv6 vollständig korrekt eingerichtet ist.
 
 DNS prüfen:
 
@@ -177,49 +205,11 @@ A Record zeigt auf <PUBLIC_IPV4>
 AAAA ist leer oder bewusst korrekt gesetzt
 ```
 
-## FRITZ!Box
-
-Die FRITZ!Box leitet eingehende Anfragen aus dem Internet an die LoadBalancer VM weiter.
-
-Pfad in der FRITZ!Box:
-
-```text
-Internet
-  -> Freigaben
-  -> Portfreigaben
-```
-
-Die Portfreigaben zeigen auf:
-
-```text
-k3s-lb-1
-192.168.178.50
-```
-
-Benötigte Freigaben:
-
-```text
-TCP 80  -> 192.168.178.50:80
-TCP 443 -> 192.168.178.50:443
-```
-
-Nicht öffentlich freigeben:
-
-```text
-TCP 6443
-TCP 22
-Port 11434 für Ollama
-```
-
-Port `6443` ist die Kubernetes API und sollte nicht aus dem Internet erreichbar sein.
-
-Port `11434` ist die Ollama API auf dem Host. Dieser Port wird nur intern vom Kubernetes Cluster verwendet und sollte nicht öffentlich erreichbar sein.
-
 ## Ubuntu Host
 
-Der Ubuntu Host ist der physische Rechner für die Virtualisierung und für die lokale KI Runtime.
+Der Ubuntu Host stellt die Virtualisierung und die lokale KI Runtime bereit.
 
-Er stellt bereit:
+Benötigt werden:
 
 ```text
 KVM
@@ -233,9 +223,7 @@ NVIDIA Treiber
 Ollama
 ```
 
-Die VMs werden mit Ubuntu Cloud Images und cloud-init erstellt.
-
-Wichtige Ordner:
+Wichtige Verzeichnisse:
 
 ```text
 cluster/libvirt
@@ -244,137 +232,46 @@ platform/traefik
 platform/cert-manager
 platform/keycloak
 platform/postgresql
+platform/open-webui
+platform/ollama-host
 apps/demo
 docs
 ```
 
 ## libvirt Bridge
 
-Die VMs laufen im FRITZ!Box LAN über eine Linux Bridge.
-
-Die aktive Bridge heißt:
-
-```text
-br0
-```
+Die VMs laufen im LAN über eine Linux Bridge.
 
 Prüfen:
 
 ```bash
-ip -br addr show br0
+ip -br addr
 bridge link
 ```
 
 Erwartung:
 
 ```text
-br0 UP 192.168.178.x/24
-enp11s0 master br0
+Bridge ist vorhanden
+Bridge hat eine LAN IP
+physisches Interface ist Mitglied der Bridge
 ```
 
-## Wann muss 02-create-host-bridge.sh ausgeführt werden?
-
-Das Skript `cluster/libvirt/02-create-host-bridge.sh` wird nur benötigt, wenn der Ubuntu Host noch keine Bridge `br0` hat.
-
-Bei einem bereits eingerichteten Host mit aktiver Bridge muss es nicht erneut ausgeführt werden.
-
-Ausführen nur in diesen Fällen:
-
-```text
-neuer Ubuntu Host
-Host wurde neu installiert
-br0 wurde gelöscht
-Netzwerk soll bewusst neu auf Bridge umgebaut werden
-ip -br addr show br0 liefert keine Bridge
-```
+Das Bridge Setup wird nur benötigt, wenn der Host noch keine passende Bridge hat.
 
 Nicht bei jedem Redeploy ausführen.
 
-Der normale Redeploy Ablauf beginnt mit:
-
-```bash
-make vm-create
-```
-
-Nicht mit:
-
-```bash
-make host-bridge
-```
-
-Das `host-bridge` Target verändert die Netzwerkkonfiguration des Hosts und sollte bewusst manuell ausgeführt werden.
-
-## Unterschied zum alten Testaufbau
-
-Vor dem Bridge Umbau wurde temporär `socat` verwendet.
-
-Alter Testpfad:
-
-```text
-Internet
-  -> FRITZ!Box
-  -> Ubuntu Host
-  -> socat
-  -> k3s-lb-1 im libvirt NAT Netz
-  -> HAProxy
-  -> Traefik
-```
-
-Dieser Aufbau war nur ein Funktionstest.
-
-Der Zielaufbau ist jetzt:
-
-```text
-Internet
-  -> FRITZ!Box
-  -> k3s-lb-1 192.168.178.50
-  -> HAProxy
-  -> Traefik
-```
-
-`socat` wird nach dem Bridge Umbau nicht mehr benötigt.
-
-Alte socat Prozesse können gestoppt werden:
-
-```bash
-sudo pkill -f "socat TCP-LISTEN:80" || true
-sudo pkill -f "socat TCP-LISTEN:443" || true
-sudo ss -tulpn | grep -E ':80|:443' || true
-```
-
 ## HAProxy
 
-HAProxy läuft auf:
+HAProxy läuft auf der LoadBalancer VM.
+
+HAProxy leitet weiter:
 
 ```text
-k3s-lb-1
-192.168.178.50
+TCP 6443 -> K3s Server API
+TCP 80   -> Traefik HTTP NodePort
+TCP 443  -> Traefik HTTPS NodePort
 ```
-
-HAProxy leitet den Traffic weiter.
-
-Kubernetes API intern:
-
-```text
-192.168.178.50:6443
-  -> k3s-server-1:6443
-```
-
-HTTP:
-
-```text
-192.168.178.50:80
-  -> k3s-agent-tools-1:30080
-```
-
-HTTPS:
-
-```text
-192.168.178.50:443
-  -> k3s-agent-tools-1:30443
-```
-
-Die HAProxy Konfiguration wird über Ansible erzeugt.
 
 Template:
 
@@ -382,7 +279,7 @@ Template:
 cluster/ansible/templates/haproxy.cfg.j2
 ```
 
-HAProxy prüfen:
+Prüfen:
 
 ```bash
 ssh k3s-lb-1
@@ -396,16 +293,12 @@ sudo ss -tulpn | grep -E ':80|:443|:6443'
 
 Das K3s Cluster wird über Ansible installiert.
 
-Inventory:
+Wichtige Dateien:
 
 ```text
 cluster/ansible/inventory.ini
-```
-
-Globale Variablen:
-
-```text
 cluster/ansible/group_vars/all.yml
+cluster/ansible/k3s.yaml
 ```
 
 Die Kubeconfig wird erzeugt unter:
@@ -414,7 +307,7 @@ Die Kubeconfig wird erzeugt unter:
 cluster/ansible/k3s.yaml
 ```
 
-Diese Datei darf nicht nach GitHub.
+Diese Datei darf nicht nach Git.
 
 Kubeconfig setzen:
 
@@ -422,7 +315,7 @@ Kubeconfig setzen:
 export KUBECONFIG=$PWD/cluster/ansible/k3s.yaml
 ```
 
-Oder dauerhaft nach `~/.kube/config` kopieren:
+Oder lokal kopieren:
 
 ```bash
 mkdir -p ~/.kube
@@ -430,14 +323,20 @@ cp cluster/ansible/k3s.yaml ~/.kube/config
 chmod 600 ~/.kube/config
 ```
 
+Nodes prüfen:
+
+```bash
+kubectl get nodes -o wide
+kubectl get nodes --show-labels
+```
+
 ## Node Labels
 
-Der Tools Node wird automatisch gelabelt.
+Der Tools Node wird für Plattform Workloads verwendet.
 
-Tools Node:
+Beispiel Label:
 
 ```text
-node-role.kubernetes.io/worker=true
 workload-type=tools
 ```
 
@@ -445,175 +344,70 @@ Prüfen:
 
 ```bash
 kubectl get nodes -L workload-type
-kubectl get nodes --show-labels
 ```
 
-Plattform Workloads werden gezielt auf den Tools Node geplant:
+Plattform Workloads können gezielt auf den Tools Node geplant werden:
 
 ```yaml
 nodeSelector:
   workload-type: tools
 ```
 
-Es gibt keinen Kubernetes GPU Node mehr.
+## Secrets
 
-Die KI Runtime läuft direkt auf dem Ubuntu Host und wird nicht über Kubernetes geplant.
+Lokale Secrets liegen außerhalb von Git.
 
-## Hinweis zur GPU
-
-Die NVIDIA RTX 5080 wird nicht an eine VM durchgereicht.
-
-Nicht verwendet werden:
+Beispiel:
 
 ```text
-PCI Passthrough
-VFIO Binding der RTX 5080
-NVIDIA Device Plugin im Kubernetes Cluster
-nvidia.com/gpu Kubernetes Ressourcen
+.local-secrets/keycloak.env
 ```
 
-Stattdessen wird Ollama direkt auf dem Ubuntu Host betrieben.
-
-Prüfen, ob die GPU auf dem Host verfügbar ist:
-
-```bash
-nvidia-smi
-```
-
-Erwartung:
+Diese Datei enthält Werte wie:
 
 ```text
-RTX 5080 wird angezeigt
-NVIDIA Treiber ist aktiv
+KEYCLOAK_ADMIN_PASSWORD
+KEYCLOAK_POSTGRES_ADMIN_PASSWORD
+KEYCLOAK_POSTGRES_USER_PASSWORD
+OPENWEBUI_OIDC_CLIENT_SECRET
 ```
 
-## Ollama auf dem Host
+Die Datei darf nicht nach Git.
 
-Ollama läuft direkt auf dem Ubuntu Host.
+Das Ansible Playbook erstellt daraus Kubernetes Secrets.
 
-Installation:
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-Service prüfen:
-
-```bash
-systemctl status ollama
-ollama --version
-```
-
-Damit Open WebUI aus dem Kubernetes Cluster auf Ollama zugreifen kann, muss Ollama auf der Host IP erreichbar sein.
-
-Systemd Override erstellen:
-
-```bash
-sudo systemctl edit ollama
-```
-
-Inhalt:
-
-```ini
-[Service]
-Environment="OLLAMA_HOST=0.0.0.0:11434"
-```
-
-Service neu laden:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart ollama
-```
-
-Prüfen:
-
-```bash
-ss -tulpen | grep 11434
-curl http://127.0.0.1:11434/api/tags
-```
-
-Erwartung:
+Für Keycloak:
 
 ```text
-Ollama lauscht auf 0.0.0.0:11434
-/api/tags liefert eine JSON Antwort
+Namespace: keycloak
+Secret: keycloak-admin-secret
+Secret: keycloak-postgresql-secret
+Secret: openwebui-oidc-client-secret
+```
+
+Für Open WebUI:
+
+```text
+Namespace: open-webui
+Secret: open-webui-oidc-secret
+Key: OAUTH_CLIENT_SECRET
 ```
 
 Wichtig:
 
 ```text
-Port 11434 nicht in der FRITZ!Box freigeben.
-Ollama soll nur intern aus dem LAN oder Kubernetes Cluster erreichbar sein.
-```
-
-## Ollama aus Kubernetes testen
-
-Host IP ermitteln:
-
-```bash
-ip -4 addr
-```
-
-Dann aus dem Cluster testen:
-
-```bash
-kubectl run ollama-test \
-  --rm -it \
-  --restart=Never \
-  --image=curlimages/curl \
-  -- curl http://<HOST_LAN_IP>:11434/api/tags
-```
-
-Erwartung:
-
-```text
-JSON Antwort von Ollama
-```
-
-## Modell laden
-
-Kleines Startmodell laden:
-
-```bash
-ollama pull llama3.1:8b
-```
-
-Modell testen:
-
-```bash
-ollama run llama3.1:8b
-```
-
-GPU Nutzung prüfen:
-
-```bash
-watch -n 1 nvidia-smi
+Kubernetes Secrets sind namespace gebunden.
+Open WebUI kann kein Secret aus dem Namespace keycloak direkt lesen.
 ```
 
 ## Traefik
 
-Traefik wird über einen Wrapper Chart installiert.
+Traefik wird als Kubernetes Ingress Controller verwendet.
 
 Chart:
 
 ```text
 platform/traefik
-```
-
-Traefik läuft auf dem Tools Node:
-
-```text
-k3s-agent-tools-1
-```
-
-Der Traefik Service ist ein NodePort Service.
-
-Ports:
-
-```text
-HTTP   30080
-HTTPS  30443
 ```
 
 Installation:
@@ -637,9 +431,9 @@ kubectl get ingressclass
 Erwartung:
 
 ```text
-Traefik Pod läuft auf k3s-agent-tools-1
-Service Type ist NodePort
-Ports sind 80:30080 und 443:30443
+Traefik läuft auf dem Tools Node
+Traefik Service ist als NodePort erreichbar
+IngressClass ist vorhanden
 ```
 
 ## cert-manager
@@ -667,6 +461,7 @@ Prüfen:
 ```bash
 kubectl get pods -n cert-manager -o wide
 kubectl get crd | grep cert-manager
+kubectl get clusterissuer
 ```
 
 Warten bis alle Pods bereit sind:
@@ -711,16 +506,43 @@ letsencrypt-staging   True
 letsencrypt-prod      True
 ```
 
-Für die Zertifikatsvalidierung wird HTTP01 verwendet. Deshalb muss Port 80 öffentlich erreichbar sein.
+Für HTTP01 muss Port 80 öffentlich erreichbar sein.
+
+## PostgreSQL
+
+PostgreSQL wird für Keycloak verwendet.
+
+Chart:
+
+```text
+platform/postgresql
+```
+
+Installation:
+
+```bash
+helm dependency update platform/postgresql
+
+helm upgrade --install postgresql platform/postgresql \
+  --namespace keycloak \
+  --create-namespace
+```
+
+Prüfen:
+
+```bash
+kubectl get pod postgresql-0 -n keycloak -o wide
+kubectl get secret keycloak-postgresql-secret -n keycloak
+```
 
 ## Keycloak
 
 Keycloak wird als Identity Provider verwendet.
 
-Host:
+Adresse:
 
 ```text
-auth.<DOMAIN>
+https://auth.<DOMAIN>
 ```
 
 Chart:
@@ -728,14 +550,6 @@ Chart:
 ```text
 platform/keycloak
 ```
-
-Keycloak läuft auf dem Tools Node:
-
-```text
-k3s-agent-tools-1
-```
-
-Keycloak verwendet eine externe PostgreSQL Datenbank im Namespace `keycloak`.
 
 Installation:
 
@@ -758,84 +572,17 @@ kubectl get certificate -n keycloak
 Erwartung:
 
 ```text
-keycloak-0 läuft auf k3s-agent-tools-1
-postgresql-0 läuft auf k3s-agent-tools-1
-auth.<DOMAIN> Zertifikat ist Ready
-Realm ist vorhanden
+Keycloak Pod läuft
+PostgreSQL Pod läuft
+Zertifikat ist Ready
 Login ist möglich
 ```
 
-## PostgreSQL
+## Keycloak Realm und Open WebUI Client
 
-PostgreSQL wird für Keycloak verwendet.
+Im Keycloak Realm wird ein OIDC Client für Open WebUI verwendet.
 
-Chart:
-
-```text
-platform/postgresql
-```
-
-PostgreSQL läuft auf dem Tools Node:
-
-```text
-k3s-agent-tools-1
-```
-
-Wichtig ist der Node Selector in den Values:
-
-```yaml
-primary:
-  nodeSelector:
-    workload-type: tools
-```
-
-Je nach Wrapper Chart kann der Wert unterhalb von `postgresql.primary` liegen.
-
-Prüfen:
-
-```bash
-kubectl get pod postgresql-0 -n keycloak -o wide
-kubectl get pod postgresql-0 -n keycloak -o jsonpath='{.spec.nodeSelector}'
-echo
-```
-
-Erwartung:
-
-```text
-postgresql-0 läuft auf k3s-agent-tools-1
-```
-
-## Open WebUI
-
-Open WebUI soll später unter folgender Adresse laufen:
-
-```text
-https://ai.<DOMAIN>
-```
-
-Open WebUI läuft im Kubernetes Cluster auf dem Tools Node.
-
-Die KI Runtime wird nicht im Cluster betrieben. Open WebUI verbindet sich stattdessen mit Ollama auf dem Ubuntu Host.
-
-Zielkonfiguration:
-
-```text
-Open WebUI:
-https://ai.<DOMAIN>
-
-Ollama:
-http://<HOST_LAN_IP>:11434
-```
-
-OIDC wird über Keycloak vorbereitet.
-
-Keycloak Realm:
-
-```text
-tannenberg
-```
-
-OIDC Client:
+Client:
 
 ```text
 open-webui
@@ -847,6 +594,350 @@ Redirect URI:
 https://ai.<DOMAIN>/oauth/oidc/callback
 ```
 
+Das Client Secret wird aus `.local-secrets/keycloak.env` erzeugt und von Ansible als Kubernetes Secret bereitgestellt.
+
+## Ollama auf dem Host
+
+Ollama wird direkt auf dem Ubuntu Host installiert.
+
+Installation:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+Service prüfen:
+
+```bash
+systemctl status ollama
+ollama --version
+```
+
+GPU prüfen:
+
+```bash
+nvidia-smi
+```
+
+Damit Open WebUI aus dem Kubernetes Cluster auf Ollama zugreifen kann, muss Ollama auf der Host IP erreichbar sein.
+
+Systemd Override:
+
+```bash
+sudo systemctl edit ollama
+```
+
+Inhalt:
+
+```ini
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+```
+
+Service neu laden:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+```
+
+Prüfen:
+
+```bash
+ss -tulpen | grep 11434
+curl http://127.0.0.1:11434/api/tags
+curl http://<HOST_LAN_IP>:11434/api/tags
+```
+
+Erwartung:
+
+```text
+Ollama lauscht auf 0.0.0.0:11434
+/api/tags liefert eine JSON Antwort
+```
+
+## Modelle laden
+
+Beispiele:
+
+```bash
+ollama pull qwen3:14b
+ollama pull qwen3.6:27b
+```
+
+Modelle anzeigen:
+
+```bash
+ollama list
+```
+
+Modell testen:
+
+```bash
+ollama run qwen3:14b
+```
+
+GPU Nutzung beobachten:
+
+```bash
+watch -n 1 nvidia-smi
+```
+
+## Ollama Host Service im Cluster
+
+Open WebUI soll nicht direkt mit einer IP Adresse konfiguriert werden.
+
+Stattdessen gibt es einen Kubernetes Service mit EndpointSlice.
+
+Datei:
+
+```text
+platform/ollama-host/ollama-host-service.yaml
+```
+
+Beispiel:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-host
+  namespace: open-webui
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: ollama-host-1
+  namespace: open-webui
+  labels:
+    kubernetes.io/service-name: ollama-host
+addressType: IPv4
+ports:
+  - name: http
+    protocol: TCP
+    port: 11434
+endpoints:
+  - addresses:
+      - "<HOST_LAN_IP>"
+```
+
+Anwenden:
+
+```bash
+kubectl apply -f platform/ollama-host/ollama-host-service.yaml
+```
+
+Test:
+
+```bash
+kubectl run ollama-test \
+  -n open-webui \
+  --rm -it \
+  --restart=Never \
+  --image=curlimages/curl \
+  -- curl -v --connect-timeout 5 http://ollama-host.open-webui.svc.cluster.local:11434/api/tags
+```
+
+Erwartung:
+
+```text
+HTTP 200
+JSON Antwort mit den installierten Modellen
+```
+
+## Open WebUI
+
+Open WebUI läuft im Kubernetes Cluster.
+
+Adresse:
+
+```text
+https://ai.<DOMAIN>
+```
+
+Helm Chart:
+
+```text
+open-webui/open-webui
+```
+
+Values:
+
+```text
+platform/open-webui/values.yaml
+```
+
+Wichtige Konfiguration:
+
+```yaml
+ollama:
+  enabled: false
+
+pipelines:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: 20Gi
+
+ingress:
+  enabled: true
+  class: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  host: ai.<DOMAIN>
+  tls: true
+
+extraEnvVars:
+  - name: WEBUI_URL
+    value: "https://ai.<DOMAIN>"
+
+  - name: ENABLE_OLLAMA_API
+    value: "true"
+
+  - name: OLLAMA_BASE_URL
+    value: "http://ollama-host.open-webui.svc.cluster.local:11434"
+
+  - name: OLLAMA_BASE_URLS
+    value: "http://ollama-host.open-webui.svc.cluster.local:11434"
+
+  - name: ENABLE_OAUTH_SIGNUP
+    value: "true"
+
+  - name: DEFAULT_USER_ROLE
+    value: "user"
+
+  - name: ENABLE_SIGNUP
+    value: "false"
+
+  - name: ENABLE_LOGIN_FORM
+    value: "false"
+
+  - name: OAUTH_MERGE_ACCOUNTS_BY_EMAIL
+    value: "true"
+
+  - name: OAUTH_CLIENT_ID
+    value: "open-webui"
+
+  - name: OAUTH_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: open-webui-oidc-secret
+        key: OAUTH_CLIENT_SECRET
+
+  - name: OPENID_PROVIDER_URL
+    value: "https://auth.<DOMAIN>/realms/<REALM>/.well-known/openid-configuration"
+
+  - name: OAUTH_PROVIDER_NAME
+    value: "Keycloak"
+
+  - name: OPENID_REDIRECT_URI
+    value: "https://ai.<DOMAIN>/oauth/oidc/callback"
+```
+
+Installation:
+
+```bash
+helm repo add open-webui https://helm.openwebui.com/
+helm repo update
+
+helm upgrade --install open-webui open-webui/open-webui \
+  --namespace open-webui \
+  --create-namespace \
+  -f platform/open-webui/values.yaml
+```
+
+Prüfen:
+
+```bash
+kubectl get pods -n open-webui
+kubectl get svc -n open-webui
+kubectl get ingress -n open-webui
+kubectl get certificate -n open-webui
+helm get values open-webui -n open-webui
+```
+
+Logs:
+
+```bash
+kubectl logs statefulset/open-webui -n open-webui --tail=150
+```
+
+Environment prüfen:
+
+```bash
+kubectl exec -n open-webui open-webui-0 -- printenv | grep -E "OLLAMA|OAUTH|OPENID|WEBUI|DEFAULT_USER_ROLE|ENABLE_LOGIN_FORM|ENABLE_SIGNUP"
+```
+
+Erwartung:
+
+```text
+Login läuft über Keycloak
+lokaler Login ist deaktiviert
+freie Registrierung ist deaktiviert
+neue Keycloak Benutzer werden automatisch als normale Benutzer aktiviert
+Open WebUI findet die Ollama Modelle
+```
+
+## UFW Firewall auf dem Host
+
+Ollama lauscht auf dem Host auf Port 11434.
+
+Port 11434 darf nicht öffentlich freigegeben werden.
+
+Empfohlene UFW Regeln auf dem Host:
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw allow from <POD_CIDR> to any port 11434 proto tcp
+sudo ufw allow from <K3S_SERVER_LAN_IP> to any port 11434 proto tcp
+sudo ufw allow from <TOOLS_NODE_LAN_IP> to any port 11434 proto tcp
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw enable
+```
+
+Status prüfen:
+
+```bash
+sudo ufw status verbose
+```
+
+Erwartung:
+
+```text
+eingehend standardmäßig blockiert
+ausgehend erlaubt
+SSH erlaubt
+Ollama nur für Pod CIDR und K3s Nodes erlaubt
+```
+
+Wichtig:
+
+```text
+Keine allgemeine Freigabe für Port 11434 setzen.
+Keine Portfreigabe für 11434 im Router setzen.
+```
+
+Ollama nach aktivierter Firewall testen:
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+
+kubectl run ollama-test \
+  -n open-webui \
+  --rm -it \
+  --restart=Never \
+  --image=curlimages/curl \
+  -- curl -v --connect-timeout 5 http://ollama-host.open-webui.svc.cluster.local:11434/api/tags
+```
+
 ## Demo Anwendung
 
 Zum Testen gibt es eine whoami Demo.
@@ -855,14 +946,6 @@ Datei:
 
 ```text
 apps/demo/whoami.yaml
-```
-
-Der Hostname sollte in der Datei auf die eigene Domain angepasst werden.
-
-Beispiel:
-
-```text
-whoami.<DOMAIN>
 ```
 
 Installieren:
@@ -880,12 +963,6 @@ kubectl get ingress -n demo
 kubectl get certificate -n demo
 ```
 
-Warten bis das Zertifikat bereit ist:
-
-```bash
-kubectl wait --for=condition=Ready certificate/whoami-tls -n demo --timeout=300s
-```
-
 Testen:
 
 ```bash
@@ -893,13 +970,12 @@ curl -v http://whoami.<DOMAIN>
 curl -v https://whoami.<DOMAIN>
 ```
 
-Erfolgreicher HTTPS Test:
+Erwartung:
 
 ```text
-SSL certificate verified
-issuer: C=US; O=Let's Encrypt
-HTTP/2 200
-X-Forwarded-Proto: https
+HTTPS funktioniert
+Zertifikat ist gültig
+whoami antwortet
 ```
 
 ## Installation von Grund auf
@@ -907,10 +983,8 @@ X-Forwarded-Proto: https
 Aus dem Repository Root:
 
 ```bash
-cd ~/Development/k3s-ai-platform
+cd <REPOSITORY_PATH>
 ```
-
-Falls `br0` bereits existiert, nicht erneut `host-bridge` ausführen.
 
 VMs erstellen:
 
@@ -955,77 +1029,56 @@ kubectl apply -f platform/cert-manager/issuers/letsencrypt-staging.yaml
 kubectl apply -f platform/cert-manager/issuers/letsencrypt-prod.yaml
 ```
 
-PostgreSQL und Keycloak installieren:
+Secrets erstellen:
+
+```bash
+ansible-playbook cluster/ansible/create-secrets.yml
+```
+
+PostgreSQL installieren:
 
 ```bash
 helm dependency update platform/postgresql
+
 helm upgrade --install postgresql platform/postgresql \
   --namespace keycloak \
   --create-namespace
+```
 
+Keycloak installieren:
+
+```bash
 helm dependency update platform/keycloak
+
 helm upgrade --install keycloak platform/keycloak \
   --namespace keycloak \
   --create-namespace
 ```
 
-Demo installieren:
+Ollama Host Service installieren:
 
 ```bash
-kubectl apply -f apps/demo/whoami.yaml
+kubectl apply -f platform/ollama-host/ollama-host-service.yaml
+```
+
+Open WebUI installieren:
+
+```bash
+helm upgrade --install open-webui open-webui/open-webui \
+  --namespace open-webui \
+  --create-namespace \
+  -f platform/open-webui/values.yaml
 ```
 
 Validieren:
 
 ```bash
 make validate
-curl -v https://whoami.<DOMAIN>
-```
-
-## Ollama Installation auf dem Host
-
-Ollama installieren:
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-Ollama erreichbar machen:
-
-```bash
-sudo systemctl edit ollama
-```
-
-Inhalt:
-
-```ini
-[Service]
-Environment="OLLAMA_HOST=0.0.0.0:11434"
-```
-
-Neu starten:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart ollama
-```
-
-Prüfen:
-
-```bash
-nvidia-smi
-curl http://127.0.0.1:11434/api/tags
-```
-
-Modell laden:
-
-```bash
-ollama pull llama3.1:8b
 ```
 
 ## Redeploy Ablauf
 
-Wenn das Cluster komplett neu aufgebaut werden soll:
+Kompletter Neuaufbau der VMs:
 
 ```bash
 make vm-delete
@@ -1045,6 +1098,8 @@ make cert-manager-install
 kubectl apply -f platform/cert-manager/issuers/letsencrypt-staging.yaml
 kubectl apply -f platform/cert-manager/issuers/letsencrypt-prod.yaml
 
+ansible-playbook cluster/ansible/create-secrets.yml
+
 helm upgrade --install postgresql platform/postgresql \
   --namespace keycloak \
   --create-namespace
@@ -1053,10 +1108,13 @@ helm upgrade --install keycloak platform/keycloak \
   --namespace keycloak \
   --create-namespace
 
-kubectl apply -f apps/demo/whoami.yaml
-```
+kubectl apply -f platform/ollama-host/ollama-host-service.yaml
 
-FRITZ!Box Portfreigaben bleiben bestehen, solange `k3s-lb-1` wieder die IP `192.168.178.50` bekommt.
+helm upgrade --install open-webui open-webui/open-webui \
+  --namespace open-webui \
+  --create-namespace \
+  -f platform/open-webui/values.yaml
+```
 
 Ollama läuft unabhängig vom Kubernetes Redeploy direkt auf dem Host.
 
@@ -1085,7 +1143,7 @@ make cleanup
 Hinweis:
 
 ```text
-make host-bridge nur verwenden, wenn br0 fehlt.
+make host-bridge nur verwenden, wenn die Bridge fehlt.
 ```
 
 ## Validierung
@@ -1101,10 +1159,10 @@ kubectl get pods -A -o wide
 Erwartung:
 
 ```text
-k3s-lb-1 ist keine Kubernetes Node
-k3s-server-1 ist Control Plane
-k3s-agent-tools-1 ist Worker Node
-kein k3s-agent-gpu-1 vorhanden
+LoadBalancer VM ist keine Kubernetes Node
+Server VM ist Control Plane
+Tools VM ist Worker Node
+kein GPU Worker vorhanden
 ```
 
 Traefik:
@@ -1133,6 +1191,14 @@ kubectl get ingress -n keycloak
 kubectl get certificate -n keycloak
 ```
 
+Open WebUI:
+
+```bash
+kubectl get pods -n open-webui
+kubectl get ingress -n open-webui
+kubectl get certificate -n open-webui
+```
+
 Ollama:
 
 ```bash
@@ -1145,10 +1211,11 @@ Ollama aus Kubernetes:
 
 ```bash
 kubectl run ollama-test \
+  -n open-webui \
   --rm -it \
   --restart=Never \
   --image=curlimages/curl \
-  -- curl http://<HOST_LAN_IP>:11434/api/tags
+  -- curl -v --connect-timeout 5 http://ollama-host.open-webui.svc.cluster.local:11434/api/tags
 ```
 
 DNS:
@@ -1161,82 +1228,43 @@ dig @8.8.8.8 ai.<DOMAIN> A
 dig @8.8.8.8 <DOMAIN> AAAA
 ```
 
-HAProxy:
-
-```bash
-ssh k3s-lb-1
-
-sudo systemctl status haproxy --no-pager
-sudo haproxy -c -f /etc/haproxy/haproxy.cfg
-sudo ss -tulpn | grep -E ':80|:443|:6443'
-```
-
 Extern:
 
 ```bash
-curl -v http://whoami.<DOMAIN>
 curl -v https://whoami.<DOMAIN>
 curl -v https://auth.<DOMAIN>
+curl -v https://ai.<DOMAIN>
 ```
 
-## Sicherheit
-
-Öffentlich notwendig:
-
-```text
-TCP 80
-TCP 443
-```
-
-Nicht öffentlich freigeben:
-
-```text
-TCP 22
-TCP 6443
-TCP 11434
-libvirt Ports
-Ubuntu Host Management Ports
-```
-
-Port 80 wird für Let’s Encrypt HTTP01 benötigt.
-
-Port 443 wird für HTTPS Dienste benötigt.
-
-Port 11434 ist die Ollama API und soll nicht öffentlich erreichbar sein.
-
-## Dateien, die nicht nach GitHub dürfen
+## Dateien, die nicht nach Git dürfen
 
 Nicht committen:
 
 ```text
+.local-secrets
+.local-secrets/
 cluster/ansible/k3s.yaml
 cluster/ansible/.k3s-bootstrap-token
 tmp/
-.local-secrets
 platform/*/charts/*.tgz
+*.log
 ```
 
 Empfohlene `.gitignore` Einträge:
 
 ```gitignore
-# Lokale Secrets
 .local-secrets
 .local-secrets/
 
-# Temporäre Dateien
 tmp/
 
-# Lokale Cluster Dateien
 cluster/ansible/k3s.yaml
 cluster/ansible/.k3s-bootstrap-token
 
-# Helm Dependency Archive
 platform/*/charts/*.tgz
 
-# Logs
 *.log
 
-# Editor und OS
 .DS_Store
 .idea/
 .vscode/
@@ -1248,111 +1276,117 @@ Vor dem Commit prüfen:
 git status
 git ls-files | grep -E 'k3s.yaml|bootstrap-token|tmp/|local-secrets|seed.iso|user-data|meta-data|\.tgz$'
 git grep "<PUBLIC_IPV4>"
-git grep "109."
 ```
 
-Wenn kritische Dateien auftauchen, aus dem Git Index entfernen:
+Falls sensible Dateien im Git Index liegen:
 
 ```bash
 git rm --cached cluster/ansible/k3s.yaml 2>/dev/null || true
 git rm --cached cluster/ansible/.k3s-bootstrap-token 2>/dev/null || true
 git rm -r --cached tmp 2>/dev/null || true
 git rm -r --cached .local-secrets 2>/dev/null || true
-git rm -r --cached platform/traefik/charts 2>/dev/null || true
-git rm -r --cached platform/cert-manager/charts 2>/dev/null || true
 ```
 
 ## Troubleshooting
 
-### Domain zeigt noch auf alten Anbieter
+### Open WebUI zeigt keine Modelle
 
 Prüfen:
 
 ```bash
-dig <DOMAIN>
-dig @8.8.8.8 <DOMAIN>
+kubectl exec -n open-webui open-webui-0 -- printenv | grep OLLAMA
+kubectl run ollama-test \
+  -n open-webui \
+  --rm -it \
+  --restart=Never \
+  --image=curlimages/curl \
+  -- curl -v --connect-timeout 5 http://ollama-host.open-webui.svc.cluster.local:11434/api/tags
 ```
 
-Lokalen DNS Cache leeren:
-
-```bash
-sudo resolvectl flush-caches
-```
-
-### FRITZ!Box zeigt k3s-lb-1 nicht an
-
-Prüfen:
-
-```bash
-ping -c 3 192.168.178.50
-ssh k3s-lb-1 hostname
-```
-
-Danach FRITZ!Box Seite neu laden.
-
-### SSH nutzt alte IPs
-
-Prüfen:
-
-```bash
-grep -n -A4 -B1 "Host k3s" ~/.ssh/config
-grep -n "192.168.122" ~/.ssh/config
-```
-
-Aktuelle Bridge IPs:
+Mögliche Ursachen:
 
 ```text
-k3s-lb-1             192.168.178.50
-k3s-server-1         192.168.178.51
-k3s-agent-tools-1    192.168.178.62
+ENABLE_OLLAMA_API ist nicht true
+OLLAMA_BASE_URL zeigt auf falsches Ziel
+OLLAMA_BASE_URLS fehlt
+ollama-host Service oder EndpointSlice fehlt
+Ollama läuft nicht
+Firewall blockiert Port 11434
 ```
 
-### Alte GPU VM ist noch vorhanden
+### Open WebUI Account Activation Pending
 
-Wenn `k3s-agent-gpu-1` aus einem alten Aufbau noch existiert, zuerst prüfen:
+Ursache:
+
+```text
+DEFAULT_USER_ROLE steht noch auf pending
+oder alter Benutzerstatus liegt noch in der Open WebUI Datenbank
+```
+
+Lösung:
+
+```text
+DEFAULT_USER_ROLE auf user setzen
+Open WebUI neu deployen
+bei bestehenden Benutzern Status im Admin Panel ändern
+oder Open WebUI PVC löschen und neu deployen
+```
+
+### Keycloak Login funktioniert nicht
+
+Prüfen:
 
 ```bash
-kubectl get pods -A -o wide | grep k3s-agent-gpu-1
-kubectl get nodes
-virsh list --all
+kubectl logs statefulset/open-webui -n open-webui --tail=150
+kubectl get secret open-webui-oidc-secret -n open-webui
+curl https://auth.<DOMAIN>/realms/<REALM>/.well-known/openid-configuration
 ```
 
-Wenn keine produktiven Workloads mehr darauf laufen:
+Mögliche Ursachen:
 
-```bash
-kubectl cordon k3s-agent-gpu-1
-kubectl drain k3s-agent-gpu-1 --ignore-daemonsets --delete-emptydir-data
-kubectl delete node k3s-agent-gpu-1
+```text
+Redirect URI passt nicht exakt
+Client Secret fehlt im Namespace open-webui
+OPENID_PROVIDER_URL ist falsch
+WEBUI_URL ist falsch
+Keycloak Realm oder Client fehlt
 ```
-
-Danach VM entfernen:
-
-```bash
-virsh shutdown k3s-agent-gpu-1
-virsh undefine k3s-agent-gpu-1 --remove-all-storage
-```
-
-Bei Longhorn vorher prüfen, ob noch Volumes oder Replicas auf dem Node liegen.
 
 ### Traefik antwortet mit 404
 
-Das ist normal, wenn keine passende Ingress Route existiert.
-
-Ein 404 bedeutet:
+Ein 404 bedeutet normalerweise:
 
 ```text
-Traefik ist erreichbar,
-aber für diesen Host gibt es keine Route.
+Traefik ist erreichbar
+aber für diesen Host existiert keine passende Ingress Route
 ```
-
-### HTTPS zeigt falsches Zertifikat
 
 Prüfen:
 
 ```bash
-curl -v https://whoami.<DOMAIN>
-kubectl get certificate -n demo
-kubectl describe certificate whoami-tls -n demo
+kubectl get ingress -A
+kubectl describe ingress -A
+```
+
+### HTTPS Zertifikat wird nicht erstellt
+
+Prüfen:
+
+```bash
+kubectl get certificate -A
+kubectl get order -A
+kubectl get challenge -A
+kubectl describe certificate -n <NAMESPACE> <CERTIFICATE_NAME>
+```
+
+Mögliche Ursachen:
+
+```text
+DNS zeigt nicht auf die öffentliche IPv4
+Port 80 ist nicht öffentlich erreichbar
+Router Portfreigabe fehlt
+ClusterIssuer ist nicht bereit
+Ingress Annotation ist falsch
 ```
 
 ### Connection refused
@@ -1362,83 +1396,67 @@ Prüfen:
 ```bash
 ssh k3s-lb-1 "sudo ss -tulpn | grep -E ':80|:443'"
 kubectl get svc -n traefik
+kubectl get pods -n traefik
 ```
 
 Mögliche Ursachen:
 
 ```text
-FRITZ!Box Freigabe zeigt auf falsches Gerät
 HAProxy läuft nicht
-Traefik ist nicht installiert
-NodePort Service fehlt
+Router zeigt auf falsches Ziel
+Traefik NodePort fehlt
+Traefik Pod läuft nicht
 ```
 
-### Open WebUI erreicht Ollama nicht
+### Ollama ist aus Kubernetes nicht erreichbar
 
-Prüfen, ob Ollama auf dem Host erreichbar ist:
+Prüfen:
 
 ```bash
 curl http://127.0.0.1:11434/api/tags
+curl http://<HOST_LAN_IP>:11434/api/tags
 ss -tulpen | grep 11434
+sudo ufw status verbose
 ```
 
-Prüfen, ob Ollama aus Kubernetes erreichbar ist:
+Dann aus Kubernetes:
 
 ```bash
 kubectl run ollama-test \
+  -n open-webui \
   --rm -it \
   --restart=Never \
   --image=curlimages/curl \
-  -- curl http://<HOST_LAN_IP>:11434/api/tags
+  -- curl -v --connect-timeout 5 http://ollama-host.open-webui.svc.cluster.local:11434/api/tags
 ```
 
 Mögliche Ursachen:
 
 ```text
 OLLAMA_HOST ist nicht auf 0.0.0.0:11434 gesetzt
-Firewall blockiert Port 11434 im LAN
-falsche Host IP in Open WebUI konfiguriert
+Host IP im EndpointSlice ist falsch
+UFW blockiert das Pod CIDR
 Ollama Service läuft nicht
 ```
 
-## Aktueller Zielzustand
+## Erfolgreicher Zielzustand
 
 Ein erfolgreicher Zielzustand sieht so aus:
 
 ```text
-DNS zeigt auf feste öffentliche IPv4
-FRITZ!Box leitet 80 und 443 auf k3s-lb-1 weiter
-k3s-lb-1 läuft im LAN unter 192.168.178.50
-HAProxy leitet an Traefik NodePorts weiter
-Traefik routet Ingress Ressourcen
-cert-manager erstellt Let’s Encrypt Zertifikate
+DNS zeigt auf die öffentliche IPv4
+Router leitet TCP 80 und TCP 443 auf die LoadBalancer VM weiter
+HAProxy leitet an Traefik weiter
+Traefik routet Kubernetes Ingress Ressourcen
+cert-manager erstellt gültige TLS Zertifikate
 Keycloak ist unter auth.<DOMAIN> erreichbar
-Open WebUI ist später unter ai.<DOMAIN> erreichbar
+Open WebUI ist unter ai.<DOMAIN> erreichbar
+Login läuft über Keycloak
+freie Open WebUI Registrierung ist deaktiviert
+neue Keycloak Benutzer werden automatisch als Benutzer aktiviert
 Ollama läuft direkt auf dem Ubuntu Host
-Ollama nutzt die RTX 5080 über den Host NVIDIA Treiber
-```
-
-Erfolgreicher Test für Kubernetes Ingress:
-
-```bash
-curl -v https://whoami.<DOMAIN>
-```
-
-Erwartung:
-
-```text
-SSL certificate verified
-HTTP/2 200
-```
-
-Erfolgreicher Test für Ollama:
-
-```bash
-curl http://127.0.0.1:11434/api/tags
-```
-
-Erwartung:
-
-```text
-JSON Antwort von Ollama
-```
+Open WebUI erreicht Ollama über den Kubernetes Service ollama-host
+Ollama nutzt die NVIDIA GPU auf dem Host
+Port 11434 ist nicht öffentlich freigegeben
+UFW erlaubt Port 11434 nur für Kubernetes und definierte Nodes
+``` 

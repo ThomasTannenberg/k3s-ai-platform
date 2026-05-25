@@ -1,0 +1,11 @@
+apiVersion: v2
+name: open-webui-wrapper
+description: Wrapper Chart for Open WebUI in the local K3s AI platform
+type: application
+version: 0.1.0
+appVersion: "0.9.5"
+
+dependencies:
+  - name: open-webui
+    version: 14.6.0
+    repository: https://helm.openwebui.com/

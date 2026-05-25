@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-host
+  namespace: open-webui
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: ollama-host-1
+  namespace: open-webui
+  labels:
+    kubernetes.io/service-name: ollama-host
+addressType: IPv4
+ports:
+  - name: http
+    protocol: TCP
+    port: 11434
+endpoints:
+  - addresses:
+      - "192.168.178.47"
